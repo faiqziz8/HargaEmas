@@ -115,7 +115,7 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
     <span class="tab" data-r="1826">5T</span><span class="tab" data-r="3652">10T</span><span class="tab" data-r="7305">20T</span>
   </div>
   <div class="tabs" id="series">
-    <span class="tab on" data-s="ubs">UBS</span><span class="tab on" data-s="antam">Antam</span>
+    <span class="tab on" data-s="ubs">UBS</span><span class="tab on" data-s="antam">Antam</span><span class="tab on" data-s="est">Antam estimasi (masa lalu)</span>
     <span class="tab on" data-s="world">Dunia (Rp/g)</span><span class="tab" data-s="ma">Rata² 50 & 200 hari</span>
   </div>
   <div class="chartbox"><canvas id="chart"></canvas></div>
@@ -168,12 +168,33 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
   </details>
 </div>
 
-<div class="foot">v1.2.2 · © 2026 Faiq Aziz · Data: Galeri24, LBMA, ECB, FRED, gold-api.com</div>
+<div class="foot">v1.3.0 · © 2026 Faiq Aziz · Data: Galeri24, LBMA, ECB, FRED, gold-api.com</div>
 
 <script>
-const VERSION = "1.2.2";
+const VERSION = "1.3.0";
 let DATA = null, chart = null, range = 90;
-const series = { ubs: true, antam: true, world: true, ma: false };
+const series = { ubs: true, antam: true, est: true, world: true, ma: false };
+// Harga Antam 1 gram (Logam Mulia) yang tercatat di berita, dipakai untuk mengkalibrasi estimasi riwayat
+const ANTAM_ANCHORS = [
+  ["2019-08-16", 766000], ["2021-09-09", 930000], ["2023-06-29", 1052000], ["2024-07-05", 1380000],
+  ["2025-08-22", 1916000], ["2026-01-05", 2515000], ["2026-01-29", 3168000], ["2026-06-04", 2759000],
+  ["2026-07-21", 2601000], ["2026-09-11", 2600000]];
+const toT = d => new Date(d + "T00:00:00Z").getTime();
+function antamEstimate(W, realPts) {
+  // premi Antam terhadap harga dunia (Rp/gram) di setiap titik acuan, lalu diinterpolasi antar tanggal
+  const daily = W.filter(x => !x.m), wd = daily.length ? daily : W;
+  const near = d => { let best = null; for (const x of wd) { if (x.d <= d) best = x; else break; } return best; };
+  const pts = [];
+  for (const [d, v] of [...ANTAM_ANCHORS, ...realPts]) {
+    const w = near(d); if (w && (toT(d) - toT(w.d)) < 35 * 864e5) pts.push([toT(d), v / w.idr_g]);
+  }
+  pts.sort((a, b) => a[0] - b[0]);
+  if (!pts.length) return {};
+  const prem = t => { if (t <= pts[0][0]) return pts[0][1]; for (let i = 1; i < pts.length; i++) if (t <= pts[i][0]) {
+      const [t0, p0] = pts[i - 1], [t1, p1] = pts[i]; return p0 + (p1 - p0) * (t - t0) / (t1 - t0); } return pts[pts.length - 1][1]; };
+  const out = {}; for (const x of W) out[x.d] = Math.round(x.idr_g * prem(toT(x.d)) / 1000) * 1000;
+  return out;
+}
 const $ = id => document.getElementById(id);
 const rp = v => v == null ? "—" : "Rp" + Math.round(v).toLocaleString("id-ID");
 const pct = (v, d = 1) => v == null ? "—" : (v * 100).toFixed(d).replace(".", ",") + "%";
@@ -284,6 +305,9 @@ function drawChart() {
     dates = dates.filter((d, i) => i % k === 0 || i === dates.length - 1 || dMap[d]);
   }
   const antamVal = d => dMap[d]?.antam_jual ?? hMap[d]?.jual ?? null;
+  const firstReal = [...H.map(x => x.d), ...D.filter(x => x.antam_jual).map(x => x.d)].sort()[0] || "9999";
+  const realPts = D.filter(x => x.antam_jual).slice(-1).map(x => [x.d, x.antam_jual]);
+  const est = series.est ? antamEstimate(W, realPts) : {};
   // titik terlihat bila datanya masih sedikit; titik terakhir selalu terlihat (agar 1 data pun tampak)
   const radii = arr => { const n = arr.filter(v => v != null).length; let lastI = -1;
     arr.forEach((v, i) => { if (v != null) lastI = i; });
@@ -292,6 +316,7 @@ function drawChart() {
   const ds = [];
   if (series.ubs) { const v = dates.map(d => dMap[d]?.ubs_jual ?? null); ds.push({ label: "UBS", data: v, borderColor: "#e3b341", backgroundColor: "#e3b341", spanGaps: true, pointRadius: radii(v), pointHoverRadius: 5, borderWidth: 2 }); }
   if (series.antam) { const v = dates.map(antamVal); ds.push({ label: "Antam", data: v, borderColor: "#f3ecdc", backgroundColor: "#f3ecdc", spanGaps: true, pointRadius: radii(v), pointHoverRadius: 5, borderWidth: 2 }); }
+  if (series.est) ds.push({ label: "Antam (estimasi)", data: dates.map(d => d < firstReal ? (est[d] ?? null) : d === firstReal ? antamVal(d) : null), borderColor: "#c9bfa8", backgroundColor: "#c9bfa8", borderDash: [6, 4], spanGaps: true, pointRadius: 0, borderWidth: 1.5 });
   if (series.world) ds.push({ label: "Dunia", data: dates.map(d => wMap[d]?.idr_g ?? null), borderColor: "#6aa7e8", backgroundColor: "#6aa7e8", spanGaps: true, pointRadius: 0, borderWidth: 1.6 });
   if (series.ma) {
     ds.push({ label: "Rata² 50h", data: dates.map(d => maMap[d]?.[0] ?? null), borderColor: "#3fb97a", borderDash: [5, 4], spanGaps: true, pointRadius: 0, borderWidth: 1.3 });
@@ -319,6 +344,7 @@ function drawChart() {
   const firstU = D.find(x => x.ubs_jual);
   if (series.ubs && firstU && firstU.d > cutS) notes.push("Riwayat UBS dikumpulkan sejak " + fmtD(firstU.d) + " (tidak ada sumber riwayat UBS gratis).");
   if (series.antam && H.length) notes.push("Antam sebelum " + fmtD((D.find(x => x.antam_jual) || {}).d || DATA.updated.slice(0, 10)) + " dari grafik Logam Mulia.");
+  if (series.est && dates.some(d => d < firstReal)) notes.push("Garis putus-putus = estimasi Antam dari harga dunia × premi Antam yang dikalibrasi dengan harga Antam tercatat di berita (2019–2026); bukan data resmi harian.");
   $("chartNote").textContent = notes.join(" ");
 }
 
