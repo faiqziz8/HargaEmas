@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
-v1.2.1  © 2026 Faiq Aziz
+v1.3.0  © 2026 Faiq Aziz
 
 Mengambil:
-  - Harga emas dunia + riwayat s.d. 20 tahun          : LBMA Gold Price (cadangan: Yahoo, stooq, datahub bulanan, gold-api)
+  - Harga emas dunia + riwayat s.d. 20 tahun          : Bundesbank (cadangan: LBMA, Yahoo, freegoldapi, stooq, datahub bulanan, gold-api)
   - Kurs USD/IDR + riwayat                            : ECB via frankfurter.app (cadangan: Yahoo, stooq, FRED bulanan, open.er-api)
   - Riwayat Antam                                     : grafik logammulia.com (jika tersedia)
   - Harga Antam & UBS (jual + buyback, 1 gram)        : galeri24.co.id (cadangan Antam: logammulia.com)
@@ -22,7 +22,7 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
 WIB = timezone(timedelta(hours=7))
 GRAM_PER_OZ = 31.1034768
@@ -91,6 +91,59 @@ def yahoo_history(symbol):
         except Exception as e:  # noqa: BLE001
             last_err = e
     raise RuntimeError(f"yahoo {symbol}: {last_err}")
+
+
+def parse_date_value_csv(txt):
+    """Ambil pasangan tanggal,nilai dari CSV apa pun (SDMX/CSV biasa). {YYYY-MM-DD: float}"""
+    out = {}
+    rows = list(csv.reader(io.StringIO(txt.replace(";", ","))))
+    hdr_i, ti, vi = None, None, None
+    for i, r in enumerate(rows[:30]):
+        up = [c.strip().upper() for c in r]
+        if "TIME_PERIOD" in up and "OBS_VALUE" in up:
+            hdr_i, ti, vi = i, up.index("TIME_PERIOD"), up.index("OBS_VALUE")
+            break
+    for r in rows[(hdr_i + 1) if hdr_i is not None else 0:]:
+        try:
+            if ti is not None:
+                d, v = r[ti].strip(), r[vi].strip()
+            else:
+                if len(r) < 2 or not re.match(r"^\d{4}-\d{2}-\d{2}$", r[0].strip()):
+                    continue
+                d, v = r[0].strip(), r[1].strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", d) and v not in ("", ".", "NaN"):
+                out[d] = float(v)
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
+def bundesbank_history():
+    """Harga emas London (USD/oz) harian dari statistik resmi Deutsche Bundesbank (gratis, tanpa kunci)."""
+    start = f"{datetime.now(WIB).year - 21}-01-01"
+    urls = [
+        f"https://api.statistiken.bundesbank.de/rest/data/BBEX3/D.XAU.USD.EA.AC.C04?format=sdmx_csv&startPeriod={start}",
+        f"https://api.statistiken.bundesbank.de/rest/download/BBEX3/D.XAU.USD.EA.AC.C04?format=csv&lang=en",
+        f"https://api.statistiken.bundesbank.de/rest/data/BBEX3/D.XAU.USD.EA.AC.C05?format=sdmx_csv&startPeriod={start}",
+    ]
+    last_err = None
+    for u in urls:
+        try:
+            out = parse_date_value_csv(get(u, timeout=60))
+            if len(out) > 500:
+                return out
+            last_err = RuntimeError(f"data sedikit ({len(out)})")
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+    raise RuntimeError(f"Bundesbank: {last_err}")
+
+
+def freegold_history():
+    """Cadangan: dataset terbuka freegoldapi.com."""
+    out = parse_date_value_csv(get("https://freegoldapi.com/data/latest.csv", timeout=60))
+    if len(out) < 500:
+        raise RuntimeError(f"freegoldapi: data sedikit ({len(out)})")
+    return out
 
 
 def lbma_history():
@@ -296,19 +349,38 @@ def lin(x, x0, x1, p0, p1):
     return p0 + t * (p1 - p0)
 
 
+def interpolate_daily(world):
+    """Isi celah antar titik (mis. data bulanan) menjadi deret hari kerja dengan interpolasi linear."""
+    out = []
+    for a, b in zip(world, world[1:]):
+        da = datetime.strptime(a["d"], "%Y-%m-%d")
+        db = datetime.strptime(b["d"], "%Y-%m-%d")
+        out.append({"d": a["d"], "idr_g": a["idr_g"], "usd": a["usd"]})
+        days = (db - da).days
+        for k in range(1, days):
+            dk = da + timedelta(days=k)
+            if dk.weekday() < 5:
+                t = k / days
+                out.append({"d": dk.strftime("%Y-%m-%d"), "idr_g": a["idr_g"] + t * (b["idr_g"] - a["idr_g"]),
+                            "usd": a["usd"] + t * (b["usd"] - a["usd"])})
+    if world:
+        out.append({"d": world[-1]["d"], "idr_g": world[-1]["idr_g"], "usd": world[-1]["usd"]})
+    return out
+
+
 def median(v):
     s = sorted(v)
     n = len(s)
     return None if n == 0 else (s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2)
 
 
-def analyze(world, domestic):
+def analyze(world, domestic, approx=False):
     """world: list {d, usd, kurs, idr_g} urut tanggal. domestic: list {d, antam_jual,...}."""
     idr = [w["idr_g"] for w in world]
     usd = [w["usd"] for w in world]
     last = idr[-1]
     ma20, ma50, ma200 = sma(idr, 20), sma(idr, 50), sma(idr, 200)
-    r = rsi(idr, 14)
+    r = None if approx else rsi(idr, 14)
     yr = idr[-252:]
     hi, lo = max(yr), min(yr)
     pos = (last - lo) / (hi - lo) if hi > lo else 0.5
@@ -345,13 +417,14 @@ def analyze(world, domestic):
     reasons.append(f"Sudah turun {abs(dd)*100:.1f}% dari puncak setahun terakhir.")
 
     # 5. Momentum — hindari 'menangkap pisau jatuh' (10)
-    falling = (ma20 is not None and last < ma20 and chg5 < -0.02)
+    falling = (ma20 is not None and last < ma20 and (chg30 < -0.04 if approx else chg5 < -0.02))
     if ma20 is not None and last > ma20:
         p = 10
         reasons.append("Harga sudah di atas rata-rata 20 hari — mulai stabil/berbalik naik.")
     elif falling:
         p = 0
-        reasons.append(f"Masih dalam tren turun tajam ({chg5*100:.1f}% dalam 5 hari) — jangan beli sekaligus.")
+        reasons.append((f"Masih dalam tren turun tajam ({chg30*100:.1f}% dalam sebulan)" if approx else
+                        f"Masih dalam tren turun tajam ({chg5*100:.1f}% dalam 5 hari)") + " — jangan beli sekaligus.")
     else:
         p = 5
         reasons.append("Momentum netral, belum ada tanda pembalikan yang jelas.")
@@ -399,9 +472,12 @@ def analyze(world, domestic):
         spread = 1 - domestic[-1]["ubs_bb"] / domestic[-1]["ubs_jual"]
         reasons.append(f"Selisih jual–buyback UBS {spread*100:.1f}%: harga harus naik sebesar ini dulu agar balik modal.")
 
+    if approx:
+        reasons.append("Catatan: data harian dunia belum tersedia, analisa memakai data bulanan (RSI belum dihitung). "
+                       "Akurasi akan naik setelah data harian terkumpul.")
     reasons = [re.sub(r"(\d)\.(\d)", r"\1,\2", x) for x in reasons]
     return {
-        "score": score, "score_eff": score_eff, "capped": capped,
+        "score": score, "score_eff": score_eff, "capped": capped, "approx": approx,
         "zone": zone, "label": label, "advice": advice,
         "components": [{"name": n, "pts": pt, "max": mx} for n, pt, mx in comp],
         "reasons": reasons,
@@ -456,7 +532,8 @@ def main():
     xau, fx, src = {}, {}, []
     errs = []
     start_year = now.year - 20
-    for name, fn in (("LBMA", lbma_history), ("yahoo", lambda: yahoo_history("GC=F")),
+    for name, fn in (("Bundesbank", bundesbank_history), ("LBMA", lbma_history),
+                     ("yahoo", lambda: yahoo_history("GC=F")), ("freegoldapi", freegold_history),
                      ("stooq", lambda: stooq_history("xauusd"))):
         try:
             xau = fn(); src.append(f"emas harian {name} ({len(xau)} hari)"); break
@@ -561,11 +638,14 @@ def main():
         domestic.append(rec)
     domestic.sort(key=lambda x: x["d"])
 
-    if len(world_daily) < 30:
-        log("Data dunia harian belum cukup untuk analisa.")
-        analysis = None
-    else:
+    if len(world_daily) >= 220:
         analysis = analyze(world_daily, domestic)
+    elif len(world) >= 15:
+        log("Data harian belum cukup, analisa memakai data bulanan.")
+        analysis = analyze(interpolate_daily(world), domestic, approx=True)
+    else:
+        log("Data dunia belum cukup untuk analisa.")
+        analysis = None
 
     # ---- notifikasi ----
     state = data.get("state", {})

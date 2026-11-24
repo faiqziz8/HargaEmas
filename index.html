@@ -134,7 +134,8 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
 
 <!-- SIMULASI -->
 <div class="card">
-  <h2>Simulasi untung/rugi UBS</h2>
+  <h2>Simulasi untung/rugi</h2>
+  <div class="tabs" id="simBrand"><span class="tab on" data-b="ubs">UBS</span><span class="tab" data-b="antam">Antam</span></div>
   <div class="f2">
     <div><label>Jumlah (gram)</label><input id="sG" type="number" inputmode="decimal" value="10"></div>
     <div><label>Harga beli per gram (Rp)</label><input id="sP" type="number" inputmode="numeric" placeholder="otomatis: harga hari ini"></div>
@@ -168,10 +169,10 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
   </details>
 </div>
 
-<div class="foot">v1.3.0 · © 2026 Faiq Aziz · Data: Galeri24, LBMA, ECB, FRED, gold-api.com</div>
+<div class="foot">v1.3.1 · © 2026 Faiq Aziz · Data: Galeri24, LBMA, ECB, FRED, gold-api.com</div>
 
 <script>
-const VERSION = "1.3.0";
+const VERSION = "1.3.1";
 let DATA = null, chart = null, range = 90;
 const series = { ubs: true, antam: true, est: true, world: true, ma: false };
 // Harga Antam 1 gram (Logam Mulia) yang tercatat di berita, dipakai untuk mengkalibrasi estimasi riwayat
@@ -348,13 +349,17 @@ function drawChart() {
   $("chartNote").textContent = notes.join(" ");
 }
 
+let simBrand = "ubs";
 function sim() {
-  const D = DATA?.domestic || [], last = D[D.length - 1] || {};
+  const D = DATA?.domestic || [];
+  const last = [...D].reverse().find(x => x[simBrand + "_bb"]) || {};
+  const jual = last[simBrand + "_jual"], bb = last[simBrand + "_bb"], nm = simBrand === "ubs" ? "UBS" : "Antam";
+  $("sP").placeholder = "otomatis: " + (jual ? rp(jual) : "harga hari ini");
   const g = parseFloat($("sG").value) || 0;
-  const p = parseFloat($("sP").value) || last.ubs_jual;
-  if (!p || !last.ubs_bb || !g) { $("sRes").textContent = "Isi jumlah gram. Butuh data harga buyback UBS."; return; }
-  const modal = g * p, nilai = g * last.ubs_bb, pl = nilai - modal, be = p / last.ubs_bb - 1;
-  $("sRes").innerHTML = `Modal ${rp(modal)} · Nilai jual sekarang ${rp(nilai)}<br>` +
+  const p = parseFloat($("sP").value) || jual;
+  if (!p || !bb || !g) { $("sRes").textContent = "Isi jumlah gram. Butuh data harga buyback " + nm + "."; return; }
+  const modal = g * p, nilai = g * bb, pl = nilai - modal, be = p / bb - 1;
+  $("sRes").innerHTML = `${nm} · Modal ${rp(modal)} · Nilai jual (buyback) sekarang ${rp(nilai)}<br>` +
     `<b class="${pl >= 0 ? "up" : "dn"}">${pl >= 0 ? "Untung" : "Rugi"} ${rp(Math.abs(pl))} (${pct(pl / modal)})</b><br>` +
     `<span class="sub">Balik modal saat buyback naik ${pct(Math.max(be, 0))} → ${rp(p)}/gram.</span>`;
 }
@@ -376,6 +381,8 @@ $("ranges").onclick = e => { const t = e.target.closest(".tab"); if (!t) return;
 $("series").onclick = e => { const t = e.target.closest(".tab"); if (!t) return;
   series[t.dataset.s] = !series[t.dataset.s]; t.classList.toggle("on", series[t.dataset.s]); DATA && drawChart(); };
 $("sG").oninput = $("sP").oninput = () => DATA && sim();
+$("simBrand").onclick = e => { const t = e.target.closest(".tab"); if (!t) return;
+  [...$("simBrand").children].forEach(x => x.classList.toggle("on", x === t)); simBrand = t.dataset.b; DATA && sim(); };
 $("reload").onclick = load;
 document.addEventListener("visibilitychange", () => { if (!document.hidden && DATA) load(); });
 load();
