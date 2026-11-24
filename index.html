@@ -8,7 +8,8 @@
 <meta name="apple-mobile-web-app-title" content="Harga Emas">
 <meta name="theme-color" content="#14110b">
 <title>Monitor Harga Emas</title>
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%2314110b'/%3E%3Cpath d='M40 120h100l-14-44H54z' fill='%23e3b341'/%3E%3Cpath d='M62 76h56l-8-26H70z' fill='%23f5d27a'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="apple-touch-icon.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root{
@@ -166,10 +167,10 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
   </details>
 </div>
 
-<div class="foot">v1.1.0 · © 2026 Faiq Aziz · Data: Galeri24, Logam Mulia, Stooq, gold-api.com</div>
+<div class="foot">v1.1.1 · © 2026 Faiq Aziz · Data: Galeri24, Logam Mulia, Stooq, gold-api.com</div>
 
 <script>
-const VERSION = "1.1.0";
+const VERSION = "1.1.1";
 let DATA = null, chart = null, range = 90;
 const series = { ubs: true, antam: true, world: true, ma: false };
 const $ = id => document.getElementById(id);
