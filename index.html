@@ -168,10 +168,10 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
   </details>
 </div>
 
-<div class="foot">v1.2.1 · © 2026 Faiq Aziz · Data: Galeri24, LBMA, ECB, FRED, gold-api.com</div>
+<div class="foot">v1.2.2 · © 2026 Faiq Aziz · Data: Galeri24, LBMA, ECB, FRED, gold-api.com</div>
 
 <script>
-const VERSION = "1.2.1";
+const VERSION = "1.2.2";
 let DATA = null, chart = null, range = 90;
 const series = { ubs: true, antam: true, world: true, ma: false };
 const $ = id => document.getElementById(id);
@@ -284,10 +284,14 @@ function drawChart() {
     dates = dates.filter((d, i) => i % k === 0 || i === dates.length - 1 || dMap[d]);
   }
   const antamVal = d => dMap[d]?.antam_jual ?? hMap[d]?.jual ?? null;
+  // titik terlihat bila datanya masih sedikit; titik terakhir selalu terlihat (agar 1 data pun tampak)
+  const radii = arr => { const n = arr.filter(v => v != null).length; let lastI = -1;
+    arr.forEach((v, i) => { if (v != null) lastI = i; });
+    return arr.map((v, i) => v == null ? 0 : (n < 60 || i === lastI) ? 3.5 : 0); };
   const pr = dates.length < 40 ? 2 : 0;
   const ds = [];
-  if (series.ubs) ds.push({ label: "UBS", data: dates.map(d => dMap[d]?.ubs_jual ?? null), borderColor: "#e3b341", backgroundColor: "#e3b341", spanGaps: true, pointRadius: pr, borderWidth: 2 });
-  if (series.antam) ds.push({ label: "Antam", data: dates.map(antamVal), borderColor: "#f3ecdc", backgroundColor: "#f3ecdc", spanGaps: true, pointRadius: pr, borderWidth: 2 });
+  if (series.ubs) { const v = dates.map(d => dMap[d]?.ubs_jual ?? null); ds.push({ label: "UBS", data: v, borderColor: "#e3b341", backgroundColor: "#e3b341", spanGaps: true, pointRadius: radii(v), pointHoverRadius: 5, borderWidth: 2 }); }
+  if (series.antam) { const v = dates.map(antamVal); ds.push({ label: "Antam", data: v, borderColor: "#f3ecdc", backgroundColor: "#f3ecdc", spanGaps: true, pointRadius: radii(v), pointHoverRadius: 5, borderWidth: 2 }); }
   if (series.world) ds.push({ label: "Dunia", data: dates.map(d => wMap[d]?.idr_g ?? null), borderColor: "#6aa7e8", backgroundColor: "#6aa7e8", spanGaps: true, pointRadius: 0, borderWidth: 1.6 });
   if (series.ma) {
     ds.push({ label: "Rata² 50h", data: dates.map(d => maMap[d]?.[0] ?? null), borderColor: "#3fb97a", borderDash: [5, 4], spanGaps: true, pointRadius: 0, borderWidth: 1.3 });
