@@ -1,5 +1,5 @@
 # Simpan file ini di repo sebagai:  .github/workflows/update.yml
-# Monitor Harga Emas v1.1.0 — © 2026 Faiq Aziz
+# Monitor Harga Emas v1.7.0 — © 2026 Faiq Aziz
 name: Update harga emas
 
 on:
@@ -45,6 +45,10 @@ jobs:
           TARGET_ANTAM: ${{ vars.TARGET_ANTAM }}
           DAILY_DIGEST: ${{ vars.DAILY_DIGEST || '0' }}
           NOTIF_CICIL: ${{ vars.NOTIF_CICIL || '0' }}
+          NOTIF_DROP: ${{ vars.NOTIF_DROP || '1' }}
+          DROP_PCT: ${{ vars.DROP_PCT || '2' }}
+          NOTIF_EVENT: ${{ vars.NOTIF_EVENT || '1' }}
+          NOTIF_WEEKLY: ${{ vars.NOTIF_WEEKLY || '1' }}
           UBS_JUAL: ${{ inputs.ubs_jual }}
           UBS_BB: ${{ inputs.ubs_bb }}
           ANTAM_JUAL: ${{ inputs.antam_jual }}
