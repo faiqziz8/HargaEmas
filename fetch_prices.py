@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
-v1.5.1  © 2026 Faiq Aziz
+v1.7.0  © 2026 Faiq Aziz
 
 Mengambil:
   - Harga emas dunia + riwayat s.d. 20 tahun          : Bundesbank (cadangan: LBMA, Yahoo, freegoldapi, stooq, datahub bulanan, gold-api)
@@ -22,7 +22,7 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-VERSION = "1.5.1"
+VERSION = "1.7.0"
 DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
 WIB = timezone(timedelta(hours=7))
 GRAM_PER_OZ = 31.1034768
@@ -35,6 +35,10 @@ TARGET_UBS = float(os.environ.get("TARGET_UBS", "0") or 0)        # notif bila U
 TARGET_ANTAM = float(os.environ.get("TARGET_ANTAM", "0") or 0)
 DAILY_DIGEST = os.environ.get("DAILY_DIGEST", "0") == "1"          # ringkasan tiap pagi (default mati)
 NOTIF_CICIL = os.environ.get("NOTIF_CICIL", "0") == "1"            # notif zona CICIL (default mati)
+NOTIF_DROP = os.environ.get("NOTIF_DROP", "1") == "1"              # notif harga turun tajam dalam sehari
+DROP_PCT = float(os.environ.get("DROP_PCT", "2") or 2)             # ambang turun (%)
+NOTIF_EVENT = os.environ.get("NOTIF_EVENT", "1") == "1"            # pengingat H-1 keputusan The Fed / data inflasi AS
+NOTIF_WEEKLY = os.environ.get("NOTIF_WEEKLY", "1") == "1"          # ringkasan mingguan tiap Senin pagi
 BUY_SCORE = 70                                                     # skor >= ini = zona BELI
 
 
@@ -506,6 +510,31 @@ def analyze(world, domestic, approx=False):
     }
 
 
+# ======================= KALENDER & SUKU BUNGA =======================
+# Jadwal resmi The Fed (revisi 12 Nov 2026) & BLS (CPI), dalam WIB.
+EVENTS = [
+    ("2026-12-10 02:00", "fomc"), ("2026-12-10 20:30", "cpi"), ("2027-01-13 20:30", "cpi"), ("2027-01-28 02:00", "fomc"),
+    ("2027-02-11 20:30", "cpi"), ("2027-03-10 20:30", "cpi"), ("2027-03-18 01:00", "fomc"), ("2027-04-13 19:30", "cpi"),
+    ("2027-04-29 01:00", "fomc"), ("2027-05-12 19:30", "cpi"), ("2027-06-10 01:00", "fomc"), ("2027-06-10 19:30", "cpi"),
+    ("2027-07-14 19:30", "cpi"), ("2027-07-29 01:00", "fomc"), ("2027-08-11 19:30", "cpi"), ("2027-09-14 19:30", "cpi"),
+    ("2027-09-16 01:00", "fomc"), ("2027-10-14 19:30", "cpi"), ("2027-11-10 20:30", "cpi"), ("2027-11-18 02:00", "fomc"),
+    ("2027-12-10 20:30", "cpi"), ("2028-01-27 02:00", "fomc"),
+]
+EV_NAME = {"fomc": "Keputusan suku bunga The Fed", "cpi": "Rilis data inflasi AS (CPI)"}
+
+
+def deposit_rates_worldbank():
+    """Suku bunga deposito rata-rata Indonesia per tahun (%), World Bank FR.INR.DPST. {tahun: persen}"""
+    j = json.loads(get("https://api.worldbank.org/v2/country/IDN/indicator/FR.INR.DPST?format=json&per_page=100", timeout=40))
+    out = {}
+    for r in (j[1] if isinstance(j, list) and len(j) > 1 and j[1] else []):
+        if r.get("value") is not None:
+            out[str(r["date"])] = round(float(r["value"]), 3)
+    if len(out) < 5:
+        raise RuntimeError("data sedikit")
+    return out
+
+
 # ======================= UJI HISTORIS SINYAL =======================
 def backtest(series, approx=False):
     """Hitung skor & zona untuk setiap hari dalam riwayat (tanpa komponen premi -> netral 5),
@@ -753,6 +782,15 @@ def main():
         log("Data dunia belum cukup untuk analisa.")
         analysis = None
 
+    # ---- suku bunga deposito historis (untuk perbandingan emas vs deposito) ----
+    dep = data.get("dep_rates") or {}
+    if not dep or now.weekday() == 0:
+        try:
+            dep = deposit_rates_worldbank()
+            status["bunga deposito"] = f"World Bank ({min(dep)}–{max(dep)})"
+        except Exception as e:  # noqa: BLE001
+            status["bunga deposito"] = f"gagal: {str(e)[:50]}" + (" (pakai data lama)" if dep else "")
+
     # ---- uji historis ----
     try:
         # pakai seluruh riwayat 20 tahun; mode 'approx' (tanpa RSI) bila sebagian besar data lama bukan harian
@@ -794,6 +832,56 @@ def main():
             ntfy(f"Harga {name} sampai target", f"{name} 1 gram {rp(v)} (target {rp(target)}).",
                  priority="high", tags="dart")
             state[flag] = today
+    # harga turun tajam dalam sehari
+    if NOTIF_DROP and state.get("drop_day") != today:
+        msgs = []
+        if len(world_daily) >= 2 and world_daily[-1]["d"] >= (now - timedelta(days=4)).strftime("%Y-%m-%d"):
+            ch = world_daily[-1]["idr_g"] / world_daily[-2]["idr_g"] - 1
+            if ch <= -DROP_PCT / 100:
+                msgs.append(f"Emas dunia {ch*100:.1f}% ({rp(world_daily[-1]['idr_g'])}/g)")
+        prevd = next((x for x in reversed(domestic) if x["d"] != today and x.get("ubs_jual")), None)
+        if prevd and last_dom.get("d") == today:
+            for key, nm in (("ubs_jual", "UBS"), ("antam_jual", "Antam")):
+                if last_dom.get(key) and prevd.get(key):
+                    ch = last_dom[key] / prevd[key] - 1
+                    if ch <= -DROP_PCT / 100:
+                        msgs.append(f"{nm} {ch*100:.1f}% → {rp(last_dom[key])}")
+        if msgs:
+            zone_txt = f"\nRekomendasi: {analysis['zone']} (skor {analysis['score_eff']})" if analysis else ""
+            ntfy("Harga emas turun tajam", "\n".join(msgs) + zone_txt, priority="high", tags="chart_with_downwards_trend")
+            state["drop_day"] = today
+    # pengingat H-1 peristiwa penting (dikirim pada run sore sehari sebelumnya)
+    if NOTIF_EVENT and now.hour >= 13:
+        sent = set(state.get("ev_sent", []))
+        for ts, kind in EVENTS:
+            ev = datetime.strptime(ts, "%Y-%m-%d %H:%M").replace(tzinfo=WIB)
+            if ts not in sent and timedelta(hours=0) < ev - now <= timedelta(hours=30):
+                dd = (ev.date() - now.date()).days
+                when = {0: "Hari ini", 1: "Besok"}.get(dd, ev.strftime("%d/%m")) + (" dini hari" if ev.hour < 6 else "")
+                ntfy(f"{when}: {EV_NAME[kind]}",
+                     f"{EV_NAME[kind]} pukul {ev.strftime('%H.%M')} WIB ({ev.strftime('%d/%m')}). "
+                     "Harga emas sering bergejolak di sekitar jadwal ini — pertimbangkan menunda pembelian besar sampai setelahnya.",
+                     tags="calendar")
+                sent.add(ts)
+        state["ev_sent"] = sorted(sent)[-30:]
+    # ringkasan mingguan (Senin pagi)
+    week = now.strftime("%G-W%V")
+    if NOTIF_WEEKLY and now.weekday() == 0 and now.hour < 13 and state.get("week_sent") != week and analysis:
+        wk_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        prev_w = next((x for x in reversed(domestic) if x["d"] <= wk_ago and x.get("ubs_jual")), None)
+        lines = [f"Rekomendasi: {analysis['zone']} (skor {analysis['score_eff']}/100)"]
+        for key, nm in (("ubs_jual", "UBS"), ("antam_jual", "Antam")):
+            if last_dom.get(key):
+                c = f" ({(last_dom[key]/prev_w[key]-1)*100:+.1f}% sepekan)" if prev_w and prev_w.get(key) else ""
+                lines.append(f"{nm} 1g: {rp(last_dom[key])}{c}")
+        wk_end = now + timedelta(days=7)
+        for ts, kind in EVENTS:
+            ev = datetime.strptime(ts, "%Y-%m-%d %H:%M").replace(tzinfo=WIB)
+            if now < ev <= wk_end:
+                hari = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"][ev.weekday()]
+                lines.append(f"📅 {hari} {ev.strftime('%d/%m %H.%M')} WIB: {EV_NAME[kind]}")
+        ntfy("Ringkasan emas minggu ini", "\n".join(lines), priority="low", tags="newspaper")
+        state["week_sent"] = week
     if not last_dom.get("ubs_jual") and state.get("warn_day") != today and now.hour >= 13:
         ntfy("Harga UBS gagal diambil", "Masukkan manual lewat Actions > Run workflow, atau cek log.",
              priority="low", tags="warning")
@@ -808,6 +896,7 @@ def main():
         "domestic": domestic,
         "antam_hist": antam_hist,
         "backtest": bt,
+        "dep_rates": dep,
         "signal_log": sig_log,
         "state": state,
         "settings": {"target_ubs": TARGET_UBS, "target_antam": TARGET_ANTAM, "buy_score": BUY_SCORE},

@@ -146,7 +146,7 @@ textarea{font-size:12px;min-height:90px}
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
 
 <script>
-const VERSION = "1.6.0", YEAR = 2026;
+const VERSION = "1.7.0", YEAR = 2026;
 let DATA = null, chart = null, range = 90, simBrand = "ubs", VIEW = "home", fromCache = false;
 const series = { ubs: true, antam: true, world: true, ma: false };
 const store = { get: (k, d) => { try { const v = localStorage.getItem("emas." + k); return v == null ? d : v; } catch (e) { return d; } },
@@ -298,6 +298,20 @@ function antamSeries() {
   return { map: out, firstReal };
 }
 function maSeries(vals, n) { const o = []; let s = 0; for (let i = 0; i < vals.length; i++) { s += vals[i]; if (i >= n) s -= vals[i - n]; o.push(i >= n - 1 ? s / n : null); } return o; }
+
+/* ================= DEPOSITO ================= */
+// Acuan terkini: BI-Rate 6,00% (RDG 17–18 Nov 2026); bunga penjaminan LPS bank umum 3,75% (1 Okt 2026–31 Jan 2027).
+const BI_RATE = 6.00, LPS_RATE = 3.75, DEP_TAX = 0.20;
+function depRateFor(year) {
+  const h = DATA?.dep_rates || {}; const v = h[String(year)];
+  return v != null ? v : parseFloat(store.get("dep", String(LPS_RATE))) || LPS_RATE;
+}
+function depGrow(amount, fromISO, toDate = new Date()) {
+  let v = amount, d = new Date(fromISO + "T00:00:00");
+  while (d < toDate) { const r = depRateFor(d.getFullYear()) / 100 * (1 - DEP_TAX) / 12; const nx = new Date(d); nx.setMonth(nx.getMonth() + 1);
+    const f = nx <= toDate ? 1 : (toDate - d) / (nx - d); v *= 1 + r * f; d = nx; }
+  return v;
+}
 
 /* ================= ATURAN BELI ================= */
 // Porsi dana bulan ini yang dibelikan emas, menurut zona. BELI juga memakai seluruh dana cadangan.
@@ -504,6 +518,8 @@ function vPorto() {
   if (a.length) {
     h += `<div class="kpi"><div><span>${L("Total emas", "Total gold")}</span><b>${N(S.gram, 2)} g</b></div><div><span>${L("Modal", "Cost")}</span><b>${R(S.cost)}</b></div>
       <div><span>${L("Nilai jual (buyback)", "Buyback value")}</span><b>${R(S.value)}</b></div><div><span>${L("Untung/rugi", "Profit/loss")}</span><b class="${S.pl >= 0 ? "up" : "dn"}">${R(S.pl)}<br><small>${SP(S.pl / S.cost)}</small></b></div></div>
+      ${(() => { const dv = a.reduce((t, x) => t + depGrow(x.g * x.p, x.d), 0); const diff = S.value - dv;
+        return `<div class="res">🏦 ${L("Jika uang yang sama didepositokan:", "If the same money were in a deposit:")} <b>${R(dv)}</b> — ${diff >= 0 ? L(`emas unggul ${R(diff)}`, `gold ahead by ${R(diff)}`) : L(`deposito unggul ${R(-diff)}`, `deposit ahead by ${R(-diff)}`)}.</div>`; })()}
       <h3>${L("Per merek", "By brand")}</h3><table><tr><th>${L("Merek", "Brand")}</th><th>Gram</th><th>${L("Rata² beli/g", "Avg cost/g")}</th><th>${L("U/R", "P/L")}</th></tr>
       ${Object.entries(S.by).map(([b, v]) => `<tr><td>${BRANDS[b] || b}</td><td>${N(v.g, 2)}</td><td>${R(v.c / v.g)}</td><td class="${v.v - v.c >= 0 ? "up" : "dn"}">${SP((v.v - v.c) / v.c)}</td></tr>`).join("")}</table>
       <h3>${L("Riwayat pembelian", "Purchases")}</h3><table>${a.map((x, i) => [x, i]).sort((p, q) => q[0].d.localeCompare(p[0].d)).map(([x, i]) => { const bb = bbOf(x.b), pl = bb ? (bb - x.p) * x.g : null;
@@ -561,11 +577,13 @@ function vAlat() {
   h += `<div class="card"><h2>${L("Simulasi strategi (data historis)", "Strategy simulator (historical)")}</h2>
     <div class="f2"><div><label>${L("Dana per bulan (Rp)", "Monthly amount (Rp)")}</label><input id="dM" type="number" inputmode="numeric" value="${store.get("dcaM", "2000000")}"></div>
     <div><label>${L("Periode", "Period")}</label><select id="dY">${[1, 3, 5, 10, 15, 20].map(y => `<option value="${y}" ${+store.get("dcaY", "5") === y ? "selected" : ""}>${y} ${L("tahun", "years")}</option>`).join("")}</select></div></div>
+    <div class="f2"><div><label>${L("Bunga deposito (%/th)", "Deposit rate (%/yr)")}</label><input id="dR" type="number" inputmode="decimal" step="0.25" value="${store.get("dep", String(LPS_RATE))}"></div>
+    <div class="sub" style="align-self:end;padding-bottom:4px">${L("Acuan: ", "Ref: ")}LPS ${N(LPS_RATE, 2)}% · BI-Rate ${N(BI_RATE, 2)}% (Nov 2026)</div></div>
     <div id="dRes" class="res"></div></div>`;
   el.innerHTML = h;
   $("simBrand").onclick = e => { const t = e.target.closest(".tab"); if (!t) return; simBrand = t.dataset.b; [...$("simBrand").children].forEach(x => x.classList.toggle("on", x === t)); sim(); };
   $("sG").oninput = $("sP").oninput = sim; sim();
-  $("dM").oninput = $("dY").onchange = () => { store.set("dcaM", $("dM").value); store.set("dcaY", $("dY").value); dca(); }; dca();
+  $("dM").oninput = $("dY").onchange = $("dR").oninput = () => { store.set("dcaM", $("dM").value); store.set("dcaY", $("dY").value); store.set("dep", $("dR").value || String(LPS_RATE)); dca(); }; dca();
 }
 function sim() {
   const d = lastBy(simBrand + "_bb"), jual = d[simBrand + "_jual"], bb = d[simBrand + "_bb"], nm = BRANDS[simBrand];
@@ -603,11 +621,18 @@ function dca() {
   const rows = [[L("Beli rutin tiap bulan (DCA)", "Monthly DCA"), g1, 0], [L("Sekaligus di awal", "Lump sum at start"), g2, 0]];
   if (hasZ) { rows.push([L("Tabung & beli hanya saat sinyal BELI/CICIL", "Save & buy only on BUY/ACCUMULATE"), g3, cash]);
     rows.push(["⭐ " + L("Ikuti aturan aplikasi (Rencana beli)", "Follow the app's rule (Buying plan)"), g4, cad]); }
+  let depD = 0; months.forEach(([d]) => depD += depGrow(M, d));
+  const depL = depGrow(total, months[0][0]);
   const best = Math.max(...rows.map(r => val(r[1]) + r[2]));
+  const depRows = [[L("🏦 Deposito, setor rutin tiap bulan", "🏦 Deposit, monthly"), depD], [L("🏦 Deposito, sekaligus di awal", "🏦 Deposit, lump sum"), depL]];
   $("dRes").innerHTML = `<div class="sub">${L(`${n} bulan × ${R(M)} = total ${R(total)}. Dinilai dengan buyback Antam hari ini (${R(bbNow)}/g).`, `${n} months × ${R(M)} = ${R(total)} total. Valued at today's Antam buyback (${R(bbNow)}/g).`)}</div>
     <table style="margin-top:6px"><tr><th>${L("Strategi", "Strategy")}</th><th>Gram</th><th>${L("Nilai akhir", "End value")}</th><th>${L("Hasil", "Return")}</th></tr>
-    ${rows.map(([nm, g, c]) => { const v = val(g) + c; return `<tr><td>${nm}${c ? `<br><span class="sub">${L("+ sisa tunai ", "+ cash left ")}${R(c)}</span>` : ""}</td><td>${N(g, 2)}</td><td class="${v === best ? "best" : ""}">${R(v)}</td><td class="${v >= total ? "up" : "dn"}">${SP(v / total - 1)}</td></tr>`; }).join("")}</table>
-    <div class="sub" style="margin-top:8px">${L("Harga beli memakai harga Antam (asli bila tersedia, sebelumnya estimasi). Hasil masa lalu tidak menjamin hasil masa depan.", "Buy prices use Antam prices (real where available, estimated before). Past results don't guarantee future returns.")}</div>`;
+    ${rows.map(([nm, g, c]) => { const v = val(g) + c; return `<tr><td>${nm}${c ? `<br><span class="sub">${L("+ sisa tunai ", "+ cash left ")}${R(c)}</span>` : ""}</td><td>${N(g, 2)}</td><td class="${v === best ? "best" : ""}">${R(v)}</td><td class="${v >= total ? "up" : "dn"}">${SP(v / total - 1)}</td></tr>`; }).join("")}
+    ${depRows.map(([nm, v]) => `<tr><td>${nm}</td><td>—</td><td>${R(v)}</td><td class="${v >= total ? "up" : "dn"}">${SP(v / total - 1)}</td></tr>`).join("")}</table>
+    <div class="res">${val(g1) >= depD ? L(`✅ Emas (beli rutin) unggul ${R(val(g1) - depD)} dibanding deposito rutin pada periode ini.`, `✅ Gold (monthly) beat a monthly deposit by ${R(val(g1) - depD)} over this period.`)
+      : L(`⚠️ Pada periode ini deposito rutin unggul ${R(depD - val(g1))} dibanding emas (beli rutin).`, `⚠️ Over this period a monthly deposit beat gold (monthly) by ${R(depD - val(g1))}.`)}</div>
+    <div class="sub" style="margin-top:8px">${L("Harga beli memakai harga Antam (asli bila tersedia, sebelumnya estimasi). Deposito: bunga majemuk bulanan setelah pajak 20%, memakai rata-rata bunga deposito Indonesia per tahun (World Bank) bila tersedia, sisanya bunga yang Anda isi. Hasil masa lalu tidak menjamin hasil masa depan.",
+      "Buy prices use Antam prices (real where available, estimated before). Deposit: monthly compounding after 20% tax, using Indonesia's yearly average deposit rate (World Bank) where available, otherwise your rate. Past results don't guarantee future returns.")}</div>`;
 }
 
 /* ================= LAINNYA ================= */
@@ -617,8 +642,13 @@ function vMore() {
     <div class="set"><div class="lbl">${L("Bahasa", "Language")}</div><div class="seg" id="segLang"><button data-v="id">Indonesia</button><button data-v="en">English</button></div></div>
     <div class="set"><div class="lbl">${L("Tampilan", "Appearance")}</div><div class="seg" id="segTheme"><button data-v="auto">${L("Otomatis", "Auto")}</button><button data-v="dark">${L("Gelap", "Dark")}</button><button data-v="light">${L("Terang", "Light")}</button></div></div></div>
   <div class="card"><details><summary>${L("Notifikasi", "Notifications")}</summary>
-    <p>${L("Notifikasi dikirim lewat aplikasi ntfy saat rekomendasi menjadi BELI, lalu diingatkan tiap pagi selama masih BELI, dan saat harga menyentuh target (jika diatur di Variables repo: TARGET_UBS / TARGET_ANTAM).",
-      "Alerts are sent via the ntfy app when the recommendation turns BUY, every morning while it stays BUY, and when prices hit a target (set TARGET_UBS / TARGET_ANTAM in repo Variables).")}</p></details></div>
+    <p>${L("Notifikasi dikirim lewat aplikasi ntfy:", "Alerts are sent via the ntfy app:")}</p><ul>
+      <li>${L("🚨 Rekomendasi menjadi BELI, lalu diingatkan tiap pagi selama masih BELI.", "🚨 Recommendation turns BUY, then every morning while it stays BUY.")}</li>
+      <li>${L("📉 Harga turun tajam dalam sehari (default ≥2%; ubah lewat Variable repo DROP_PCT).", "📉 Sharp one-day drop (default ≥2%; change via repo Variable DROP_PCT).")}</li>
+      <li>${L("📅 Pengingat H-1 keputusan The Fed & rilis inflasi AS (sore hari sebelumnya).", "📅 Day-before reminder for Fed decisions & US inflation releases (previous afternoon).")}</li>
+      <li>${L("📰 Ringkasan mingguan tiap Senin pagi.", "📰 Weekly summary every Monday morning.")}</li>
+      <li>${L("🎯 Harga menyentuh target (Variables: TARGET_UBS / TARGET_ANTAM).", "🎯 Price hits your target (Variables: TARGET_UBS / TARGET_ANTAM).")}</li></ul>
+    <p>${L("Matikan salah satunya dengan membuat Variable bernilai 0: NOTIF_DROP, NOTIF_EVENT, NOTIF_WEEKLY.", "Turn any off by creating a Variable set to 0: NOTIF_DROP, NOTIF_EVENT, NOTIF_WEEKLY.")}</p></details></div>
   <div class="card"><details><summary>${L("Cara kerja skor", "How the score works")}</summary>
     <p>${L("Skor 0–100 dihitung dari harga dunia (Rp/gram): harga vs rata-rata 200 hari (25), RSI 14 hari (20), posisi di rentang 1 tahun (20), koreksi dari puncak (15), momentum (10), premi UBS (10). Jika harga masih anjlok tajam, skor dibatasi maksimal 69.",
       "Score 0–100 from world price (Rp/gram): price vs 200-day avg (25), 14-day RSI (20), position in 1-year range (20), drawdown from high (15), momentum (10), UBS premium (10). If price is still dropping sharply, the score is capped at 69.")}</p>
@@ -628,7 +658,7 @@ function vMore() {
     <table style="margin-top:6px">${Object.keys(s).map(k => `<tr><td>${esc(k)}</td><td style="word-break:break-word">${esc(s[k])}</td></tr>`).join("")}
     <tr><td>${L("Versi robot", "Robot version")}</td><td>${DATA?.version || "—"}</td></tr><tr><td>${L("Versi aplikasi", "App version")}</td><td>${VERSION}</td></tr></table></details></div>
   <div class="card"><h2>${L("Tentang", "About")}</h2><div class="sub" style="line-height:1.7">${L("Monitor Harga Emas", "Gold Price Monitor")} v${VERSION}<br>
-    ${L("Data", "Data")}: Galeri24/Pegadaian, Bundesbank/LBMA, ECB, FRED, gold-api.com · ${L("Kalender", "Calendar")}: Federal Reserve, BLS<br>${L("Bukan nasihat keuangan.", "Not financial advice.")}<br>© ${YEAR} Faiq Aziz</div></div>`;
+    ${L("Data", "Data")}: Galeri24/Pegadaian, freegoldapi, ECB, FRED, World Bank, gold-api.com · ${L("Kalender", "Calendar")}: Federal Reserve, BLS<br>${L("Bukan nasihat keuangan.", "Not financial advice.")}<br>© ${YEAR} Faiq Aziz</div></div>`;
   const seg = (id, v) => [...$(id).children].forEach(b => b.classList.toggle("on", b.dataset.v === v));
   seg("segLang", LANG); seg("segTheme", THEME);
   $("segLang").onclick = e => { const b = e.target.closest("button"); if (!b) return; LANG = b.dataset.v; store.set("lang", LANG); applyLang(); };
