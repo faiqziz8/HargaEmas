@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
-v1.2.0  © 2026 Faiq Aziz
+v1.2.1  © 2026 Faiq Aziz
 
 Mengambil:
-  - Harga emas dunia + riwayat s.d. 20 tahun          : Yahoo Finance GC=F (cadangan: stooq, datahub bulanan, gold-api)
-  - Kurs USD/IDR + riwayat                            : Yahoo Finance IDR=X (cadangan: stooq, FRED bulanan, open.er-api)
+  - Harga emas dunia + riwayat s.d. 20 tahun          : LBMA Gold Price (cadangan: Yahoo, stooq, datahub bulanan, gold-api)
+  - Kurs USD/IDR + riwayat                            : ECB via frankfurter.app (cadangan: Yahoo, stooq, FRED bulanan, open.er-api)
   - Riwayat Antam                                     : grafik logammulia.com (jika tersedia)
   - Harga Antam & UBS (jual + buyback, 1 gram)        : galeri24.co.id (cadangan Antam: logammulia.com)
 Lalu menghitung skor analisa, menyimpan ke prices.json, dan mengirim notifikasi ntfy.
@@ -22,7 +22,7 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
 WIB = timezone(timedelta(hours=7))
 GRAM_PER_OZ = 31.1034768
@@ -91,6 +91,40 @@ def yahoo_history(symbol):
         except Exception as e:  # noqa: BLE001
             last_err = e
     raise RuntimeError(f"yahoo {symbol}: {last_err}")
+
+
+def lbma_history():
+    """Harga resmi LBMA Gold Price PM (USD/oz) harian sejak 1968 — sumber resmi pasar emas London."""
+    last_err = None
+    for kind in ("gold_pm", "gold_am"):
+        try:
+            rows = json.loads(get(f"https://prices.lbma.org.uk/json/{kind}.json", timeout=60))
+            out = {}
+            for r in rows:
+                v = (r.get("v") or [None])[0]
+                if r.get("d") and v:
+                    out[r["d"][:10]] = float(v)
+            if len(out) > 1000:
+                return out
+            last_err = RuntimeError("data sedikit")
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+    raise RuntimeError(f"LBMA: {last_err}")
+
+
+def frankfurter_idr(start_year):
+    """Kurs referensi ECB USD/IDR harian via api.frankfurter.app (gratis, tanpa kunci)."""
+    out = {}
+    this_year = datetime.now(WIB).year
+    for y in range(start_year, this_year + 1):
+        end = f"{y}-12-31" if y < this_year else datetime.now(WIB).strftime("%Y-%m-%d")
+        j = json.loads(get(f"https://api.frankfurter.app/{y}-01-01..{end}?from=USD&to=IDR", timeout=40))
+        for d, v in (j.get("rates") or {}).items():
+            if v.get("IDR"):
+                out[d] = float(v["IDR"])
+    if len(out) < 100:
+        raise RuntimeError("frankfurter: data sedikit")
+    return out
 
 
 def monthly_gold_history():
@@ -420,16 +454,22 @@ def main():
     # ---- dunia (riwayat sampai 20 tahun) ----
     world_map = {w["d"]: w for w in data.get("world", [])}
     xau, fx, src = {}, {}, []
-    for name, fn in (("yahoo", lambda: yahoo_history("GC=F")), ("stooq", lambda: stooq_history("xauusd"))):
+    errs = []
+    start_year = now.year - 20
+    for name, fn in (("LBMA", lbma_history), ("yahoo", lambda: yahoo_history("GC=F")),
+                     ("stooq", lambda: stooq_history("xauusd"))):
         try:
             xau = fn(); src.append(f"emas harian {name} ({len(xau)} hari)"); break
         except Exception as e:  # noqa: BLE001
-            log(name, "emas gagal:", e)
-    for name, fn in (("yahoo", lambda: yahoo_history("IDR=X")), ("stooq", lambda: stooq_history("usdidr"))):
+            log(name, "emas gagal:", e); errs.append(f"{name}: {str(e)[:60]}")
+    for name, fn in (("ECB/frankfurter", lambda: frankfurter_idr(start_year)),
+                     ("yahoo", lambda: yahoo_history("IDR=X")), ("stooq", lambda: stooq_history("usdidr"))):
         try:
             fx = fn(); src.append(f"kurs harian {name}"); break
         except Exception as e:  # noqa: BLE001
-            log(name, "kurs gagal:", e)
+            log(name, "kurs gagal:", e); errs.append(f"{name}: {str(e)[:60]}")
+    if errs:
+        status["error sumber"] = "; ".join(errs)
     if today not in xau:
         try:
             xau[today] = spot_now(); src.append("spot hari ini gold-api")
