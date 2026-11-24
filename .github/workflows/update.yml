@@ -1,0 +1,60 @@
+# Simpan file ini di repo sebagai:  .github/workflows/update.yml
+# Monitor Harga Emas v1.1.0 — © 2026 Faiq Aziz
+name: Update harga emas
+
+on:
+  schedule:
+    - cron: "17 3 * * *"    # ±10.17 WIB (setelah harga Antam/UBS pagi keluar)
+    - cron: "11 9 * * *"    # ±16.11 WIB (cek ulang sore)
+  workflow_dispatch:         # tombol "Run workflow" (bisa isi harga manual jika robot gagal)
+    inputs:
+      ubs_jual:
+        description: "UBS 1 gram harga jual (opsional, contoh 2542000)"
+        required: false
+      ubs_bb:
+        description: "UBS 1 gram buyback (opsional)"
+        required: false
+      antam_jual:
+        description: "Antam 1 gram harga jual (opsional)"
+        required: false
+      antam_bb:
+        description: "Antam 1 gram buyback (opsional)"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-harga
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ambil harga & analisa
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TARGET_UBS: ${{ vars.TARGET_UBS }}
+          TARGET_ANTAM: ${{ vars.TARGET_ANTAM }}
+          DAILY_DIGEST: ${{ vars.DAILY_DIGEST || '0' }}
+          NOTIF_CICIL: ${{ vars.NOTIF_CICIL || '0' }}
+          UBS_JUAL: ${{ inputs.ubs_jual }}
+          UBS_BB: ${{ inputs.ubs_bb }}
+          ANTAM_JUAL: ${{ inputs.antam_jual }}
+          ANTAM_BB: ${{ inputs.antam_bb }}
+        run: python fetch_prices.py
+
+      - name: Simpan data
+        run: |
+          git config user.name "robot-emas"
+          git config user.email "robot-emas@users.noreply.github.com"
+          git add prices.json
+          git diff --cached --quiet || git commit -m "Update harga $(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M')"
+          git push
