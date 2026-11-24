@@ -1,0 +1,11 @@
+{
+  "name": "Monitor Harga Emas",
+  "short_name": "Harga Emas",
+  "description": "Monitor harga emas Antam, UBS & dunia dengan rekomendasi beli. v1.5.0 © 2026 Faiq Aziz",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#14110b",
+  "theme_color": "#14110b",
+  "icons": [{ "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }]
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
-v1.3.0  © 2026 Faiq Aziz
+v1.5.0  © 2026 Faiq Aziz
 
 Mengambil:
   - Harga emas dunia + riwayat s.d. 20 tahun          : Bundesbank (cadangan: LBMA, Yahoo, freegoldapi, stooq, datahub bulanan, gold-api)
@@ -22,7 +22,7 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-VERSION = "1.3.0"
+VERSION = "1.5.0"
 DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
 WIB = timezone(timedelta(hours=7))
 GRAM_PER_OZ = 31.1034768
@@ -295,7 +295,8 @@ def galeri24_prices():
     lines = html_to_lines(get("https://galeri24.co.id/harga-emas"))
     antam = parse_vendor_1g(lines, ["ANTAM"], GALERI24_VENDORS)
     ubs = parse_vendor_1g(lines, ["UBS"], GALERI24_VENDORS)
-    return antam, ubs
+    g24 = parse_vendor_1g(lines, ["GALERI 24", "GALERI24"], GALERI24_VENDORS)
+    return antam, ubs, g24
 
 
 def logammulia_antam():
@@ -391,44 +392,52 @@ def analyze(world, domestic, approx=False):
 
     comp = []
     reasons = []
+    rc = []          # kode alasan terstruktur (untuk tampilan dwibahasa di aplikasi)
 
     # 1. Valuasi vs rata-rata 200 hari (25)
     p = lin(dev200, 0.10, -0.12, 0, 25) if dev200 is not None else 12.5
-    comp.append(("Harga vs rata-rata 200 hari", round(p, 1), 25))
+    comp.append(("Harga vs rata-rata 200 hari", round(p, 1), 25, "dev200"))
     if dev200 is not None:
+        rc.append({"k": "dev200", "v": round(dev200, 4)})
         reasons.append(f"Harga dunia {abs(dev200)*100:.1f}% {'di bawah' if dev200 < 0 else 'di atas'} rata-rata 200 hari"
                        + (" — relatif murah." if dev200 < -0.05 else " — relatif mahal." if dev200 > 0.05 else " — wajar."))
 
     # 2. RSI 14 (20)
     p = lin(r, 70, 30, 0, 20) if r is not None else 10
-    comp.append(("RSI 14 hari (jenuh jual/beli)", round(p, 1), 20))
+    comp.append(("RSI 14 hari (jenuh jual/beli)", round(p, 1), 20, "rsi"))
     if r is not None:
+        rc.append({"k": "rsi", "v": round(r, 1)})
         reasons.append(f"RSI {r:.0f}" + (" — jenuh jual (oversold), sering jadi titik pantul." if r < 30
                                          else " — jenuh beli (overbought), rawan koreksi." if r > 70 else " — netral."))
 
     # 3. Posisi dalam rentang 52 minggu (20)
     p = lin(pos, 1.0, 0.0, 0, 20)
-    comp.append(("Posisi di rentang 1 tahun", round(p, 1), 20))
+    comp.append(("Posisi di rentang 1 tahun", round(p, 1), 20, "pos52"))
+    rc.append({"k": "pos52", "v": round(pos, 3)})
     reasons.append(f"Berada di {pos*100:.0f}% rentang harga setahun (0% = termurah, 100% = termahal).")
 
     # 4. Koreksi dari puncak 1 tahun (15)
     p = lin(-dd, 0.0, 0.25, 0, 15)
-    comp.append(("Koreksi dari puncak 1 tahun", round(p, 1), 15))
+    comp.append(("Koreksi dari puncak 1 tahun", round(p, 1), 15, "dd52"))
+    rc.append({"k": "dd52", "v": round(dd, 4)})
     reasons.append(f"Sudah turun {abs(dd)*100:.1f}% dari puncak setahun terakhir.")
 
     # 5. Momentum — hindari 'menangkap pisau jatuh' (10)
     falling = (ma20 is not None and last < ma20 and (chg30 < -0.04 if approx else chg5 < -0.02))
     if ma20 is not None and last > ma20:
         p = 10
+        rc.append({"k": "mom_up"})
         reasons.append("Harga sudah di atas rata-rata 20 hari — mulai stabil/berbalik naik.")
     elif falling:
         p = 0
+        rc.append({"k": "mom_fall_m" if approx else "mom_fall_d", "v": round(chg30 if approx else chg5, 4)})
         reasons.append((f"Masih dalam tren turun tajam ({chg30*100:.1f}% dalam sebulan)" if approx else
                         f"Masih dalam tren turun tajam ({chg5*100:.1f}% dalam 5 hari)") + " — jangan beli sekaligus.")
     else:
         p = 5
+        rc.append({"k": "mom_flat"})
         reasons.append("Momentum netral, belum ada tanda pembalikan yang jelas.")
-    comp.append(("Momentum jangka pendek", p, 10))
+    comp.append(("Momentum jangka pendek", p, 10, "mom"))
 
     # 6. Premi UBS terhadap harga dunia (10)
     prem_hist = [x["ubs_jual"] / x["idr_g"] - 1 for x in domestic if x.get("ubs_jual") and x.get("idr_g")]
@@ -436,13 +445,15 @@ def analyze(world, domestic, approx=False):
     if prem_now is not None and len(prem_hist) >= 10:
         med = median(prem_hist[:-1])
         p = lin(prem_now - med, 0.03, -0.03, 0, 10)
+        rc.append({"k": "prem_cmp", "v": round(prem_now, 4), "m": round(med, 4)})
         reasons.append(f"Premi UBS {prem_now*100:.1f}% di atas harga dunia (median {med*100:.1f}%)"
                        + (" — lebih murah dari biasanya." if prem_now < med else " — lebih mahal dari biasanya."))
     else:
         p = 5
         if prem_now is not None:
+            rc.append({"k": "prem", "v": round(prem_now, 4)})
             reasons.append(f"Premi UBS {prem_now*100:.1f}% di atas harga dunia (riwayat belum cukup untuk dibandingkan).")
-    comp.append(("Premi UBS vs harga dunia", round(p, 1), 10))
+    comp.append(("Premi UBS vs harga dunia", round(p, 1), 10, "prem"))
 
     score = round(sum(c[1] for c in comp))
     capped = False
@@ -470,17 +481,20 @@ def analyze(world, domestic, approx=False):
     spread = None
     if domestic and domestic[-1].get("ubs_jual") and domestic[-1].get("ubs_bb"):
         spread = 1 - domestic[-1]["ubs_bb"] / domestic[-1]["ubs_jual"]
+        rc.append({"k": "spread", "v": round(spread, 4)})
         reasons.append(f"Selisih jual–buyback UBS {spread*100:.1f}%: harga harus naik sebesar ini dulu agar balik modal.")
 
     if approx:
+        rc.append({"k": "approx"})
         reasons.append("Catatan: data harian dunia belum tersedia, analisa memakai data bulanan (RSI belum dihitung). "
                        "Akurasi akan naik setelah data harian terkumpul.")
     reasons = [re.sub(r"(\d)\.(\d)", r"\1,\2", x) for x in reasons]
     return {
         "score": score, "score_eff": score_eff, "capped": capped, "approx": approx,
         "zone": zone, "label": label, "advice": advice,
-        "components": [{"name": n, "pts": pt, "max": mx} for n, pt, mx in comp],
+        "components": [{"name": n, "pts": pt, "max": mx, "key": k} for n, pt, mx, k in comp],
         "reasons": reasons,
+        "rcodes": rc,
         "ind": {
             "last_idr_g": round(last), "last_usd": usd[-1],
             "ma20": ma20 and round(ma20), "ma50": ma50 and round(ma50), "ma200": ma200 and round(ma200),
@@ -490,6 +504,85 @@ def analyze(world, domestic, approx=False):
             "spread_ubs": spread and round(spread, 4),
         },
     }
+
+
+# ======================= UJI HISTORIS SINYAL =======================
+def backtest(series, approx=False):
+    """Hitung skor & zona untuk setiap hari dalam riwayat (tanpa komponen premi -> netral 5),
+    lalu ukur hasil 6 & 12 bulan setelah sinyal BELI / CICIL pertama muncul."""
+    idr = [w["idr_g"] for w in series]
+    dts = [w["d"] for w in series]
+    n = len(idr)
+    if n < 300:
+        return None
+    cs = [0.0]
+    for v in idr:
+        cs.append(cs[-1] + v)
+    gains, losses = [0.0], [0.0]
+    for i in range(1, n):
+        dlt = idr[i] - idr[i - 1]
+        gains.append(gains[-1] + max(dlt, 0))
+        losses.append(losses[-1] + max(-dlt, 0))
+    zones, scores = [None] * n, [None] * n
+    for i in range(252, n):
+        last = idr[i]
+        ma20 = (cs[i + 1] - cs[i - 19]) / 20
+        ma200 = (cs[i + 1] - cs[i - 199]) / 200
+        win = idr[i - 251:i + 1]
+        hi, lo = max(win), min(win)
+        pos = (last - lo) / (hi - lo) if hi > lo else 0.5
+        dd = last / hi - 1
+        chg5 = last / idr[i - 5] - 1
+        chg30 = last / idr[i - 21] - 1
+        dev = last / ma200 - 1
+        if approx:
+            r = None
+        else:
+            g, l_ = gains[i] - gains[i - 14], losses[i] - losses[i - 14]
+            r = 100.0 if l_ == 0 else 100 - 100 / (1 + g / l_)
+        pts = lin(dev, 0.10, -0.12, 0, 25) + (lin(r, 70, 30, 0, 20) if r is not None else 10)
+        pts += lin(pos, 1.0, 0.0, 0, 20) + lin(-dd, 0.0, 0.25, 0, 15)
+        falling = last < ma20 and (chg30 < -0.04 if approx else chg5 < -0.02)
+        pts += 10 if last > ma20 else (0 if falling else 5)
+        pts += 5
+        sc = round(pts)
+        if falling and sc >= BUY_SCORE:
+            sc = BUY_SCORE - 1
+        scores[i] = sc
+        zones[i] = "B" if sc >= BUY_SCORE else "C" if sc >= 50 else "T" if sc >= 35 else "M"
+    H6, H12 = 126, 252
+
+    def fwd(i, h):
+        return round(idr[i + h] / idr[i] - 1, 4) if i + h < n else None
+
+    sig = []
+    for i in range(253, n):
+        if zones[i] in ("B", "C") and zones[i - 1] != zones[i] and zones[i - 1] not in ("B",):
+            if zones[i] == "C" and zones[i - 1] == "B":
+                continue
+            sig.append({"d": dts[i], "z": zones[i], "s": scores[i], "p": round(idr[i]),
+                        "r6": fwd(i, H6), "r12": fwd(i, H12)})
+
+    def stats(lst, key):
+        v = [x[key] for x in lst if x[key] is not None]
+        if not v:
+            return None
+        return {"n": len(v), "avg": round(sum(v) / len(v), 4), "win": round(sum(1 for x in v if x > 0) / len(v), 3)}
+
+    all_idx = [i for i in range(252, n)]
+    base = {k: stats([{"r": fwd(i, h)} for i in all_idx], "r") for k, h in (("r6", H6), ("r12", H12))}
+    by_zone = {}
+    for zc in ("B", "C", "T", "M"):
+        lst = [{"r6": fwd(i, H6), "r12": fwd(i, H12)} for i in all_idx if zones[i] == zc]
+        by_zone[zc] = {"days": len(lst), "r6": stats(lst, "r6"), "r12": stats(lst, "r12")}
+    monthly, seen = [], set()
+    for i in range(252, n):
+        ym = dts[i][:7]
+        if ym not in seen:
+            seen.add(ym)
+            monthly.append([dts[i], zones[i], scores[i]])
+    return {"approx": approx, "from": dts[252], "signals": sig[-80:], "n_signals": len(sig),
+            "stats": {"base": base, "zone": by_zone}, "monthly": monthly}
 
 
 # ======================= NOTIFIKASI =======================
@@ -610,9 +703,10 @@ def main():
               ("antam_jual", "antam_bb", "ubs_jual", "ubs_bb")}
     rec = {"d": today}
     try:
-        (aj, ab), (uj, ub) = galeri24_prices()
-        rec.update(antam_jual=aj, antam_bb=ab, ubs_jual=uj, ubs_bb=ub)
-        status["galeri24"] = f"antam={'ok' if aj else 'tidak ketemu'}, ubs={'ok' if uj else 'tidak ketemu'}"
+        (aj, ab), (uj, ub), (gj, gb) = galeri24_prices()
+        rec.update(antam_jual=aj, antam_bb=ab, ubs_jual=uj, ubs_bb=ub, g24_jual=gj, g24_bb=gb)
+        status["galeri24"] = (f"antam={'ok' if aj else 'tidak ketemu'}, ubs={'ok' if uj else 'tidak ketemu'}, "
+                              f"galeri24={'ok' if gj else 'tidak ketemu'}")
     except Exception as e:  # noqa: BLE001
         status["galeri24"] = f"gagal: {e}"
     if not rec.get("antam_jual"):
@@ -631,7 +725,7 @@ def main():
 
     domestic = [x for x in data.get("domestic", []) if x["d"] != today]
     prev_today = next((x for x in data.get("domestic", []) if x["d"] == today), {})
-    for k in ("antam_jual", "antam_bb", "ubs_jual", "ubs_bb"):
+    for k in ("antam_jual", "antam_bb", "ubs_jual", "ubs_bb", "g24_jual", "g24_bb"):
         if not rec.get(k) and prev_today.get(k):
             rec[k] = prev_today[k]          # jangan timpa data pagi dengan kosong
     if any(rec.get(k) for k in ("antam_jual", "ubs_jual")):
@@ -647,8 +741,24 @@ def main():
         log("Data dunia belum cukup untuk analisa.")
         analysis = None
 
+    # ---- uji historis ----
+    try:
+        if len(world_daily) >= 300:
+            bt = backtest(world_daily)
+        elif len(world) >= 30:
+            bt = backtest(interpolate_daily(world), approx=True)
+        else:
+            bt = None
+    except Exception as e:  # noqa: BLE001
+        log("backtest gagal:", e)
+        bt = data.get("backtest")
+
     # ---- notifikasi ----
     state = data.get("state", {})
+    sig_log = data.get("signal_log", [])
+    if analysis and (not sig_log or sig_log[-1]["z"] != analysis["zone"]):
+        sig_log.append({"d": today, "z": analysis["zone"], "s": analysis["score_eff"]})
+    sig_log = sig_log[-200:]
     last_dom = domestic[-1] if domestic else {}
     if analysis:
         z = analysis["zone"]
@@ -689,6 +799,8 @@ def main():
         "world": world,
         "domestic": domestic,
         "antam_hist": antam_hist,
+        "backtest": bt,
+        "signal_log": sig_log,
         "state": state,
         "settings": {"target_ubs": TARGET_UBS, "target_antam": TARGET_ANTAM, "buy_score": BUY_SCORE},
     }
