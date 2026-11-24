@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Harga Emas">
+<meta name="theme-color" content="#14110b">
+<title>Monitor Harga Emas</title>
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%2314110b'/%3E%3Cpath d='M40 120h100l-14-44H54z' fill='%23e3b341'/%3E%3Cpath d='M62 76h56l-8-26H70z' fill='%23f5d27a'/%3E%3C/svg%3E">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#14110b;--card:#1e1a12;--card2:#272116;--line:#3a3222;--text:#f3ecdc;--mute:#a99d84;
+  --gold:#e3b341;--gold2:#f5d27a;--green:#3fb97a;--red:#e5604f;--amber:#e3a03a;--blue:#6aa7e8;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  padding:calc(env(safe-area-inset-top) + 14px) 14px calc(env(safe-area-inset-bottom) + 24px);max-width:720px;margin:0 auto}
+h1{font-size:20px;letter-spacing:.2px}
+h2{font-size:15px;color:var(--gold2);margin-bottom:10px;font-weight:650}
+.top{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px;gap:8px}
+.sub{color:var(--mute);font-size:12.5px}
+.btn{background:var(--card2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:7px 11px;font-size:13px;cursor:pointer}
+.btn:active{opacity:.7}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:12px}
+.signal{position:relative;overflow:hidden}
+.zone{display:inline-block;font-weight:800;font-size:13px;letter-spacing:1px;padding:4px 10px;border-radius:999px}
+.z-BELI{background:rgba(63,185,122,.18);color:var(--green)}
+.z-CICIL{background:rgba(227,179,65,.18);color:var(--gold)}
+.z-TUNGGU{background:rgba(106,167,232,.16);color:var(--blue)}
+.z-MAHAL{background:rgba(229,96,79,.18);color:var(--red)}
+.big{font-size:22px;font-weight:750;margin:8px 0 4px}
+.gauge{height:10px;border-radius:99px;background:linear-gradient(90deg,var(--red) 0 35%,var(--blue) 35% 50%,var(--gold) 50% 70%,var(--green) 70% 100%);position:relative;margin:14px 0 4px;opacity:.85}
+.needle{position:absolute;top:-5px;width:4px;height:20px;background:#fff;border-radius:3px;box-shadow:0 0 0 2px var(--bg);transition:left .6s}
+.gl{display:flex;justify-content:space-between;font-size:10.5px;color:var(--mute)}
+.advice{margin-top:10px;font-size:14.5px}
+.note{margin-top:8px;font-size:12.5px;color:var(--amber)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.pc{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+.pc.wide{grid-column:1/-1}
+.pc .n{font-size:12px;color:var(--mute);display:flex;justify-content:space-between;gap:6px}
+.pc .v{font-size:19px;font-weight:720;margin-top:3px}
+.pc .bb{font-size:12.5px;color:var(--mute);margin-top:2px}
+.up{color:var(--green)}.dn{color:var(--red)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.tab{background:var(--card2);border:1px solid var(--line);color:var(--mute);border-radius:9px;padding:5px 10px;font-size:12.5px;cursor:pointer}
+.tab.on{color:var(--bg);background:var(--gold);border-color:var(--gold);font-weight:650}
+.chartbox{position:relative;height:270px}
+.comp{margin:7px 0}
+.comp .row{display:flex;justify-content:space-between;font-size:13px}
+.bar{height:6px;background:var(--card2);border-radius:9px;margin-top:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--gold);border-radius:9px}
+ul.r{padding-left:18px}ul.r li{margin:5px 0;font-size:13.5px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td{padding:6px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+details summary{cursor:pointer;color:var(--gold2);font-weight:600;font-size:14px}
+details p,details li{font-size:13px;color:var(--mute);margin-top:6px}
+details ol,details ul{padding-left:18px}
+label{font-size:12.5px;color:var(--mute);display:block;margin-bottom:3px}
+input,select{width:100%;background:var(--card2);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px;font-size:15px}
+.f2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.res{margin-top:10px;font-size:14px}
+.empty{color:var(--mute);font-size:13px;padding:10px 0}
+.foot{text-align:center;color:var(--mute);font-size:11.5px;margin-top:18px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:4px;vertical-align:middle}
+.err{background:rgba(229,96,79,.12);border:1px solid rgba(229,96,79,.4);color:#f3b2a8;border-radius:12px;padding:10px;font-size:13px;margin-bottom:12px;display:none}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div>
+    <h1>🪙 Monitor Harga Emas</h1>
+    <div class="sub" id="upd">Memuat data…</div>
+  </div>
+  <button class="btn" id="reload">↻ Muat ulang</button>
+</div>
+
+<div class="err" id="err"></div>
+
+<!-- SINYAL -->
+<div class="card signal">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h2 style="margin:0">Rekomendasi hari ini</h2>
+    <span class="zone" id="zone">—</span>
+  </div>
+  <div class="big" id="label">—</div>
+  <div class="sub" id="scoreTxt"></div>
+  <div class="gauge"><div class="needle" id="needle" style="left:0"></div></div>
+  <div class="gl"><span>Mahal</span><span>Tunggu</span><span>Cicil</span><span>Beli</span></div>
+  <div class="advice" id="advice"></div>
+  <div class="note" id="capNote" style="display:none"></div>
+</div>
+
+<!-- HARGA -->
+<div class="grid">
+  <div class="pc"><div class="n"><span>UBS 1 gram</span><span id="ubsChg"></span></div>
+    <div class="v" id="ubs">—</div><div class="bb" id="ubsBb">Buyback —</div></div>
+  <div class="pc"><div class="n"><span>Antam 1 gram</span><span id="antChg"></span></div>
+    <div class="v" id="ant">—</div><div class="bb" id="antBb">Buyback —</div></div>
+  <div class="pc wide"><div class="n"><span>Emas dunia <span id="live"></span></span><span id="wChg"></span></div>
+    <div class="v" id="wUsd">—</div><div class="bb" id="wIdr">—</div></div>
+</div>
+
+<!-- GRAFIK -->
+<div class="card">
+  <h2>Grafik harga (Rp per gram)</h2>
+  <div class="tabs" id="ranges">
+    <span class="tab" data-r="30">1B</span><span class="tab on" data-r="90">3B</span><span class="tab" data-r="180">6B</span>
+    <span class="tab" data-r="365">1T</span><span class="tab" data-r="1095">3T</span>
+  </div>
+  <div class="tabs" id="series">
+    <span class="tab on" data-s="ubs">UBS</span><span class="tab on" data-s="antam">Antam</span>
+    <span class="tab on" data-s="world">Dunia (Rp/g)</span><span class="tab" data-s="ma">Rata² 50 & 200 hari</span>
+  </div>
+  <div class="chartbox"><canvas id="chart"></canvas></div>
+  <div class="sub" id="chartNote" style="margin-top:8px"></div>
+</div>
+
+<!-- ANALISA -->
+<div class="card">
+  <h2>Analisa detail</h2>
+  <div id="comps"></div>
+  <h2 style="margin-top:14px">Alasan</h2>
+  <ul class="r" id="reasons"></ul>
+  <h2 style="margin-top:14px">Indikator</h2>
+  <table id="ind"></table>
+</div>
+
+<!-- SIMULASI -->
+<div class="card">
+  <h2>Simulasi untung/rugi UBS</h2>
+  <div class="f2">
+    <div><label>Jumlah (gram)</label><input id="sG" type="number" inputmode="decimal" value="10"></div>
+    <div><label>Harga beli per gram (Rp)</label><input id="sP" type="number" inputmode="numeric" placeholder="otomatis: harga hari ini"></div>
+  </div>
+  <div class="res" id="sRes"></div>
+</div>
+
+<!-- CARA KERJA -->
+<div class="card">
+  <details>
+    <summary>Cara kerja skor & notifikasi</summary>
+    <p>Skor 0–100, makin tinggi makin menarik untuk dibeli. Dihitung dari harga dunia dalam Rupiah per gram:</p>
+    <ul>
+      <li><b>Harga vs rata-rata 200 hari (25)</b>: makin jauh di bawah rata-rata, makin murah.</li>
+      <li><b>RSI 14 hari (20)</b>: di bawah 30 = jenuh jual, sering jadi titik pantul.</li>
+      <li><b>Posisi di rentang 1 tahun (20)</b>: dekat titik terendah setahun = menarik.</li>
+      <li><b>Koreksi dari puncak (15)</b>: makin dalam koreksinya, makin besar diskonnya.</li>
+      <li><b>Momentum (10)</b>: menghindari "menangkap pisau jatuh". Jika harga masih anjlok tajam, skor dibatasi maksimal 69 (zona CICIL).</li>
+      <li><b>Premi UBS (10)</b>: harga UBS dibanding harga dunia; premi lebih rendah dari biasanya = lebih murah.</li>
+    </ul>
+    <p>Zona: ≥70 <b>BELI</b> · 50–69 <b>CICIL</b> · 35–49 <b>TUNGGU</b> · &lt;35 <b>MAHAL</b>.</p>
+    <p>Notifikasi (app ntfy) dikirim saat rekomendasi menjadi <b>BELI</b>, lalu diingatkan setiap pagi selama masih BELI. Juga saat harga menyentuh target Anda (jika diisi). Notif zona CICIL dan ringkasan harian mati secara default.</p>
+    <p>Data diperbarui otomatis ±10.00 dan 16.00 WIB oleh GitHub Actions. Analisa ini berbasis statistik harga, bukan nasihat keuangan, dan tidak bisa memperkirakan berita mendadak (keputusan The Fed, geopolitik).</p>
+  </details>
+</div>
+
+<div class="card">
+  <details>
+    <summary>Status sumber data</summary>
+    <table id="status" style="margin-top:8px"></table>
+  </details>
+</div>
+
+<div class="foot">v1.1.0 · © 2026 Faiq Aziz · Data: Galeri24, Logam Mulia, Stooq, gold-api.com</div>
+
+<script>
+const VERSION = "1.1.0";
+let DATA = null, chart = null, range = 90;
+const series = { ubs: true, antam: true, world: true, ma: false };
+const $ = id => document.getElementById(id);
+const rp = v => v == null ? "—" : "Rp" + Math.round(v).toLocaleString("id-ID");
+const pct = (v, d = 1) => v == null ? "—" : (v * 100).toFixed(d).replace(".", ",") + "%";
+const fmtD = d => new Date(d + "T00:00:00").toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "2-digit" });
+
+function chg(el, now, prev) {
+  if (now == null || prev == null) { el.textContent = ""; return; }
+  const d = now - prev, p = d / prev;
+  el.className = d > 0 ? "up" : d < 0 ? "dn" : "";
+  el.textContent = (d > 0 ? "▲ " : d < 0 ? "▼ " : "• ") + pct(Math.abs(p), 2);
+}
+
+async function load() {
+  $("err").style.display = "none";
+  try {
+    const r = await fetch("prices.json?t=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    DATA = await r.json();
+    render();
+    liveSpot();
+  } catch (e) {
+    $("upd").textContent = "Belum ada data";
+    $("err").style.display = "block";
+    $("err").innerHTML = "Data belum tersedia (" + e.message + "). Jalankan robotnya sekali: buka repo GitHub → tab <b>Actions</b> → <b>Update harga emas</b> → <b>Run workflow</b>, tunggu ±1 menit, lalu muat ulang.";
+  }
+}
+
+function render() {
+  const A = DATA.analysis, W = DATA.world || [], D = DATA.domestic || [];
+  const up = new Date(DATA.updated);
+  $("upd").textContent = "Diperbarui " + up.toLocaleString("id-ID", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) + " WIB";
+
+  // sinyal
+  if (A) {
+    $("zone").textContent = A.zone; $("zone").className = "zone z-" + A.zone;
+    $("label").textContent = A.label;
+    $("scoreTxt").textContent = "Skor " + A.score_eff + " / 100" + (A.capped ? " (skor mentah " + A.score + ")" : "");
+    $("needle").style.left = "calc(" + Math.max(0, Math.min(100, A.score_eff)) + "% - 2px)";
+    $("advice").textContent = A.advice;
+    if (A.capped) { $("capNote").style.display = "block"; $("capNote").textContent = "⚠️ Secara harga sudah masuk zona BELI, tapi tren masih turun tajam — skor dibatasi ke zona CICIL."; }
+    else $("capNote").style.display = "none";
+  } else {
+    $("label").textContent = "Data belum cukup"; $("advice").textContent = "Analisa muncul setelah riwayat harga dunia minimal 30 hari tersedia.";
+  }
+
+  // harga
+  const last = D[D.length - 1] || {}, prev = [...D].reverse().find(x => x.d !== last.d) || {};
+  $("ubs").textContent = rp(last.ubs_jual); $("ubsBb").textContent = "Buyback " + rp(last.ubs_bb) + (last.d ? " · " + fmtD(last.d) : "");
+  $("ant").textContent = rp(last.antam_jual); $("antBb").textContent = "Buyback " + rp(last.antam_bb) + (last.d ? " · " + fmtD(last.d) : "");
+  chg($("ubsChg"), last.ubs_jual, prev.ubs_jual); chg($("antChg"), last.antam_jual, prev.antam_jual);
+  const w = W[W.length - 1], wp = W[W.length - 2];
+  if (w) {
+    $("wUsd").textContent = "$" + w.usd.toLocaleString("en-US", { maximumFractionDigits: 2 }) + " /oz";
+    $("wIdr").textContent = rp(w.idr_g) + " per gram · kurs " + Math.round(w.kurs).toLocaleString("id-ID") + " · " + fmtD(w.d);
+    chg($("wChg"), w.usd, wp && wp.usd);
+  }
+
+  renderAnalysis(A); renderStatus(); drawChart(); sim();
+}
+
+function renderAnalysis(A) {
+  if (!A) { $("comps").innerHTML = '<div class="empty">Belum ada analisa.</div>'; return; }
+  $("comps").innerHTML = A.components.map(c =>
+    `<div class="comp"><div class="row"><span>${c.name}</span><span>${String(c.pts).replace(".", ",")} / ${c.max}</span></div>
+     <div class="bar"><i style="width:${(c.pts / c.max) * 100}%"></i></div></div>`).join("");
+  $("reasons").innerHTML = A.reasons.map(r => "<li>" + r + "</li>").join("");
+  const I = A.ind;
+  const rows = [
+    ["Harga dunia (Rp/gram)", rp(I.last_idr_g)],
+    ["Rata-rata 20 hari", rp(I.ma20)], ["Rata-rata 50 hari", rp(I.ma50)], ["Rata-rata 200 hari", rp(I.ma200)],
+    ["Selisih dari rata² 200 hari", pct(I.dev200)],
+    ["RSI 14 hari", I.rsi == null ? "—" : String(I.rsi).replace(".", ",")],
+    ["Tertinggi 1 tahun", rp(I.hi52)], ["Terendah 1 tahun", rp(I.lo52)],
+    ["Turun dari puncak 1 tahun", pct(I.dd52)],
+    ["Perubahan 5 hari", pct(I.chg5)], ["Perubahan ±1 bulan", pct(I.chg30)],
+    ["Premi UBS vs dunia", pct(I.premium_ubs)], ["Selisih jual–buyback UBS", pct(I.spread_ubs)],
+  ];
+  $("ind").innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+}
+
+function renderStatus() {
+  const s = DATA.status || {};
+  $("status").innerHTML = Object.keys(s).map(k => `<tr><td>${k}</td><td>${s[k]}</td></tr>`).join("") +
+    `<tr><td>Versi robot</td><td>${DATA.version || "—"}</td></tr><tr><td>Versi aplikasi</td><td>${VERSION}</td></tr>`;
+}
+
+function maSeries(vals, n) {
+  const out = []; let sum = 0;
+  for (let i = 0; i < vals.length; i++) { sum += vals[i]; if (i >= n) sum -= vals[i - n]; out.push(i >= n - 1 ? sum / n : null); }
+  return out;
+}
+
+function drawChart() {
+  if (typeof Chart === "undefined") { $("chartNote").textContent = "Grafik tidak bisa dimuat (cek koneksi internet)."; return; }
+  const W = DATA.world || [], D = DATA.domestic || [];
+  const cut = new Date(); cut.setDate(cut.getDate() - range);
+  const cutS = cut.toISOString().slice(0, 10);
+  const wMap = Object.fromEntries(W.map(x => [x.d, x]));
+  const dMap = Object.fromEntries(D.map(x => [x.d, x]));
+  const ma50 = maSeries(W.map(x => x.idr_g), 50), ma200 = maSeries(W.map(x => x.idr_g), 200);
+  const maMap = {}; W.forEach((x, i) => maMap[x.d] = [ma50[i], ma200[i]]);
+  const dates = [...new Set([...W.map(x => x.d), ...D.map(x => x.d)])].filter(d => d >= cutS).sort();
+  const ds = [];
+  if (series.ubs) ds.push({ label: "UBS", data: dates.map(d => dMap[d]?.ubs_jual ?? null), borderColor: "#e3b341", backgroundColor: "#e3b341", spanGaps: true, pointRadius: dates.length < 40 ? 2 : 0, borderWidth: 2 });
+  if (series.antam) ds.push({ label: "Antam", data: dates.map(d => dMap[d]?.antam_jual ?? null), borderColor: "#f3ecdc", backgroundColor: "#f3ecdc", spanGaps: true, pointRadius: dates.length < 40 ? 2 : 0, borderWidth: 2 });
+  if (series.world) ds.push({ label: "Dunia", data: dates.map(d => wMap[d]?.idr_g ?? null), borderColor: "#6aa7e8", backgroundColor: "#6aa7e8", spanGaps: true, pointRadius: 0, borderWidth: 1.6 });
+  if (series.ma) {
+    ds.push({ label: "Rata² 50h", data: dates.map(d => maMap[d]?.[0] ?? null), borderColor: "#3fb97a", borderDash: [5, 4], spanGaps: true, pointRadius: 0, borderWidth: 1.3 });
+    ds.push({ label: "Rata² 200h", data: dates.map(d => maMap[d]?.[1] ?? null), borderColor: "#e5604f", borderDash: [5, 4], spanGaps: true, pointRadius: 0, borderWidth: 1.3 });
+  }
+  const cfg = {
+    type: "line", data: { labels: dates.map(fmtD), datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { color: "#a99d84", boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ": " + rp(c.parsed.y) } } },
+      scales: {
+        x: { ticks: { color: "#a99d84", maxTicksLimit: 6, maxRotation: 0, font: { size: 10.5 } }, grid: { color: "rgba(255,255,255,.04)" } },
+        y: { ticks: { color: "#a99d84", font: { size: 10.5 }, callback: v => (v / 1e6).toFixed(2).replace(".", ",") + " jt" }, grid: { color: "rgba(255,255,255,.06)" } }
+      }
+    }
+  };
+  if (chart) chart.destroy();
+  chart = new Chart($("chart"), cfg);
+  const nDom = D.filter(x => x.d >= cutS).length;
+  $("chartNote").textContent = nDom < 5 ? "Riwayat UBS & Antam baru mulai terkumpul sejak aplikasi dipasang; garis biru (dunia) sudah punya riwayat panjang." : "";
+}
+
+function sim() {
+  const D = DATA?.domestic || [], last = D[D.length - 1] || {};
+  const g = parseFloat($("sG").value) || 0;
+  const p = parseFloat($("sP").value) || last.ubs_jual;
+  if (!p || !last.ubs_bb || !g) { $("sRes").textContent = "Isi jumlah gram. Butuh data harga buyback UBS."; return; }
+  const modal = g * p, nilai = g * last.ubs_bb, pl = nilai - modal, be = p / last.ubs_bb - 1;
+  $("sRes").innerHTML = `Modal ${rp(modal)} · Nilai jual sekarang ${rp(nilai)}<br>` +
+    `<b class="${pl >= 0 ? "up" : "dn"}">${pl >= 0 ? "Untung" : "Rugi"} ${rp(Math.abs(pl))} (${pct(pl / modal)})</b><br>` +
+    `<span class="sub">Balik modal saat buyback naik ${pct(Math.max(be, 0))} → ${rp(p)}/gram.</span>`;
+}
+
+async function liveSpot() {
+  try {
+    const r = await fetch("https://api.gold-api.com/price/XAU", { cache: "no-store" });
+    const j = await r.json(); const W = DATA.world || [], w = W[W.length - 1];
+    if (!j.price || !w) return;
+    $("wUsd").textContent = "$" + Number(j.price).toLocaleString("en-US", { maximumFractionDigits: 2 }) + " /oz";
+    $("wIdr").textContent = "≈ " + rp(j.price * w.kurs / 31.1034768) + " per gram · kurs " + Math.round(w.kurs).toLocaleString("id-ID");
+    $("live").innerHTML = '<span class="dot"></span><span class="sub">live</span>';
+    chg($("wChg"), j.price, w.usd);
+  } catch (e) { /* tetap pakai data harian */ }
+}
+
+$("ranges").onclick = e => { const t = e.target.closest(".tab"); if (!t) return;
+  [...$("ranges").children].forEach(x => x.classList.toggle("on", x === t)); range = +t.dataset.r; DATA && drawChart(); };
+$("series").onclick = e => { const t = e.target.closest(".tab"); if (!t) return;
+  series[t.dataset.s] = !series[t.dataset.s]; t.classList.toggle("on", series[t.dataset.s]); DATA && drawChart(); };
+$("sG").oninput = $("sP").oninput = () => DATA && sim();
+$("reload").onclick = load;
+document.addEventListener("visibilitychange", () => { if (!document.hidden && DATA) load(); });
+load();
+</script>
+</body>
+</html>

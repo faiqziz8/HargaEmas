@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""
+Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
+v1.1.0  © 2026 Faiq Aziz
+
+Mengambil:
+  - Harga emas dunia (XAU/USD) + riwayat harian      : stooq.com (cadangan: gold-api.com)
+  - Kurs USD/IDR + riwayat                            : stooq.com (cadangan: open.er-api.com)
+  - Harga Antam & UBS (jual + buyback, 1 gram)        : galeri24.co.id (cadangan Antam: logammulia.com)
+Lalu menghitung skor analisa, menyimpan ke prices.json, dan mengirim notifikasi ntfy.
+
+Hanya memakai pustaka bawaan Python (tanpa pip install).
+"""
+import csv
+import html
+import io
+import json
+import os
+import re
+import sys
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+VERSION = "1.1.0"
+DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
+WIB = timezone(timedelta(hours=7))
+GRAM_PER_OZ = 31.1034768
+UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
+      "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+
+# ---------- pengaturan (bisa diubah lewat Variables/Secrets repo) ----------
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
+TARGET_UBS = float(os.environ.get("TARGET_UBS", "0") or 0)        # notif bila UBS 1 g <= ini (0 = mati)
+TARGET_ANTAM = float(os.environ.get("TARGET_ANTAM", "0") or 0)
+DAILY_DIGEST = os.environ.get("DAILY_DIGEST", "0") == "1"          # ringkasan tiap pagi (default mati)
+NOTIF_CICIL = os.environ.get("NOTIF_CICIL", "0") == "1"            # notif zona CICIL (default mati)
+BUY_SCORE = 70                                                     # skor >= ini = zona BELI
+
+
+def log(*a):
+    print(*a, file=sys.stderr)
+
+
+def get(url, timeout=30):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA,
+        "Accept": "text/html,application/json,text/csv,*/*",
+        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def rp_to_int(s):
+    digits = re.sub(r"[^\d]", "", s or "")
+    return int(digits) if digits else None
+
+
+# ======================= HARGA DUNIA & KURS =======================
+def stooq_history(symbol):
+    """Kembalikan dict {YYYY-MM-DD: close}."""
+    txt = get(f"https://stooq.com/q/d/l/?s={symbol}&i=d")
+    out = {}
+    for row in csv.DictReader(io.StringIO(txt)):
+        try:
+            out[row["Date"]] = float(row["Close"])
+        except (KeyError, ValueError, TypeError):
+            continue
+    if len(out) < 10:
+        raise RuntimeError(f"stooq {symbol}: data terlalu sedikit")
+    return out
+
+
+def spot_now():
+    j = json.loads(get("https://api.gold-api.com/price/XAU"))
+    return float(j["price"])
+
+
+def kurs_now():
+    j = json.loads(get("https://open.er-api.com/v6/latest/USD"))
+    return float(j["rates"]["IDR"])
+
+
+# ======================= HARGA DOMESTIK =======================
+def html_to_lines(raw):
+    raw = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", raw)
+    raw = re.sub(r"(?i)<br\s*/?>|</(div|p|tr|td|th|li|h\d|span|section)>", "\n", raw)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    raw = html.unescape(raw)
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in raw.split("\n")]
+    return [ln for ln in lines if ln]
+
+
+RP_RE = re.compile(r"Rp\.?\s?[\d\.\,]{5,}")
+ONE_GRAM_RE = re.compile(r"^(1|1[\.,]0+)(\s?(gr|gram|g))?$", re.I)
+
+
+def parse_vendor_1g(lines, vendor_names, stop_names):
+    """Cari blok vendor (judul persis), lalu baris berat 1 gram + dua harga (jual, buyback)."""
+    vset = {v.upper() for v in vendor_names}
+    sset = {s.upper() for s in stop_names}
+    starts = [i for i, ln in enumerate(lines)
+              if ln.upper() in vset or ln.upper().replace("HARGA ", "") in vset]
+    for st in starts:
+        for i in range(st + 1, min(st + 400, len(lines))):
+            up = lines[i].upper().replace("HARGA ", "")
+            if up in sset and up not in vset:
+                break
+            if ONE_GRAM_RE.match(lines[i]):
+                prices = []
+                for j in range(i + 1, min(i + 8, len(lines))):
+                    m = RP_RE.search(lines[j])
+                    if m:
+                        prices.append(rp_to_int(m.group()))
+                    elif ONE_GRAM_RE.match(lines[j]) or re.match(r"^\d+([\.,]\d+)?$", lines[j]):
+                        break
+                    if len(prices) == 2:
+                        break
+                if prices and 500_000 < prices[0] < 20_000_000:
+                    jual = prices[0]
+                    bb = prices[1] if len(prices) > 1 and 400_000 < prices[1] <= jual else None
+                    return jual, bb
+    return None, None
+
+
+GALERI24_VENDORS = ["GALERI 24", "DINAR G24", "BABY GALERI 24", "ANTAM", "UBS", "ANTAM MULIA RETRO",
+                    "ANTAM NON PEGADAIAN", "UBS DISNEY", "UBS ELSA", "UBS ANNA", "UBS MICKEY FULLBODY",
+                    "UBS MICKEY FULL BODY", "LOTUS ARCHI", "UBS HELLO KITTY", "BABY SERIES TUMBUHAN",
+                    "BABY SERIES INVESTASI", "BATIK SERIES", "LOTUS ARCHI GIFT"]
+
+
+def galeri24_prices():
+    lines = html_to_lines(get("https://galeri24.co.id/harga-emas"))
+    antam = parse_vendor_1g(lines, ["ANTAM"], GALERI24_VENDORS)
+    ubs = parse_vendor_1g(lines, ["UBS"], GALERI24_VENDORS)
+    return antam, ubs
+
+
+def logammulia_antam():
+    lines = html_to_lines(get("https://www.logammulia.com/id/harga-emas-hari-ini"))
+    jual = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^1\s?gr(am)?$", ln, re.I):
+            for j in range(i + 1, min(i + 4, len(lines))):
+                v = rp_to_int(lines[j])
+                if v and 500_000 < v < 20_000_000:
+                    jual = v
+                    break
+            if jual:
+                break
+    bb = None
+    try:
+        t = " ".join(html_to_lines(get("https://www.logammulia.com/id/sell/gold")))
+        m = re.search(r"(?i)buyback[^R]{0,60}(Rp\.?\s?[\d\.\,]{7,})", t)
+        if m:
+            bb = rp_to_int(m.group(1))
+    except Exception as e:  # noqa: BLE001
+        log("logammulia buyback gagal:", e)
+    return jual, bb
+
+
+# ======================= ANALISA =======================
+def sma(vals, n):
+    return sum(vals[-n:]) / n if len(vals) >= n else None
+
+
+def rsi(vals, n=14):
+    if len(vals) < n + 1:
+        return None
+    gains, losses = 0.0, 0.0
+    for a, b in zip(vals[-n - 1:-1], vals[-n:]):
+        d = b - a
+        gains += max(d, 0)
+        losses += max(-d, 0)
+    if losses == 0:
+        return 100.0
+    rs = (gains / n) / (losses / n)
+    return 100 - 100 / (1 + rs)
+
+
+def lin(x, x0, x1, p0, p1):
+    """Interpolasi linear x dari [x0,x1] ke [p0,p1], dibatasi."""
+    if x is None:
+        return None
+    t = (x - x0) / (x1 - x0)
+    t = max(0.0, min(1.0, t))
+    return p0 + t * (p1 - p0)
+
+
+def median(v):
+    s = sorted(v)
+    n = len(s)
+    return None if n == 0 else (s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2)
+
+
+def analyze(world, domestic):
+    """world: list {d, usd, kurs, idr_g} urut tanggal. domestic: list {d, antam_jual,...}."""
+    idr = [w["idr_g"] for w in world]
+    usd = [w["usd"] for w in world]
+    last = idr[-1]
+    ma20, ma50, ma200 = sma(idr, 20), sma(idr, 50), sma(idr, 200)
+    r = rsi(idr, 14)
+    yr = idr[-252:]
+    hi, lo = max(yr), min(yr)
+    pos = (last - lo) / (hi - lo) if hi > lo else 0.5
+    dd = last / hi - 1
+    chg5 = last / idr[-6] - 1 if len(idr) >= 6 else 0
+    chg30 = last / idr[-22] - 1 if len(idr) >= 22 else 0
+    dev200 = last / ma200 - 1 if ma200 else None
+
+    comp = []
+    reasons = []
+
+    # 1. Valuasi vs rata-rata 200 hari (25)
+    p = lin(dev200, 0.10, -0.12, 0, 25) if dev200 is not None else 12.5
+    comp.append(("Harga vs rata-rata 200 hari", round(p, 1), 25))
+    if dev200 is not None:
+        reasons.append(f"Harga dunia {abs(dev200)*100:.1f}% {'di bawah' if dev200 < 0 else 'di atas'} rata-rata 200 hari"
+                       + (" — relatif murah." if dev200 < -0.05 else " — relatif mahal." if dev200 > 0.05 else " — wajar."))
+
+    # 2. RSI 14 (20)
+    p = lin(r, 70, 30, 0, 20) if r is not None else 10
+    comp.append(("RSI 14 hari (jenuh jual/beli)", round(p, 1), 20))
+    if r is not None:
+        reasons.append(f"RSI {r:.0f}" + (" — jenuh jual (oversold), sering jadi titik pantul." if r < 30
+                                         else " — jenuh beli (overbought), rawan koreksi." if r > 70 else " — netral."))
+
+    # 3. Posisi dalam rentang 52 minggu (20)
+    p = lin(pos, 1.0, 0.0, 0, 20)
+    comp.append(("Posisi di rentang 1 tahun", round(p, 1), 20))
+    reasons.append(f"Berada di {pos*100:.0f}% rentang harga setahun (0% = termurah, 100% = termahal).")
+
+    # 4. Koreksi dari puncak 1 tahun (15)
+    p = lin(-dd, 0.0, 0.25, 0, 15)
+    comp.append(("Koreksi dari puncak 1 tahun", round(p, 1), 15))
+    reasons.append(f"Sudah turun {abs(dd)*100:.1f}% dari puncak setahun terakhir.")
+
+    # 5. Momentum — hindari 'menangkap pisau jatuh' (10)
+    falling = (ma20 is not None and last < ma20 and chg5 < -0.02)
+    if ma20 is not None and last > ma20:
+        p = 10
+        reasons.append("Harga sudah di atas rata-rata 20 hari — mulai stabil/berbalik naik.")
+    elif falling:
+        p = 0
+        reasons.append(f"Masih dalam tren turun tajam ({chg5*100:.1f}% dalam 5 hari) — jangan beli sekaligus.")
+    else:
+        p = 5
+        reasons.append("Momentum netral, belum ada tanda pembalikan yang jelas.")
+    comp.append(("Momentum jangka pendek", p, 10))
+
+    # 6. Premi UBS terhadap harga dunia (10)
+    prem_hist = [x["ubs_jual"] / x["idr_g"] - 1 for x in domestic if x.get("ubs_jual") and x.get("idr_g")]
+    prem_now = prem_hist[-1] if prem_hist else None
+    if prem_now is not None and len(prem_hist) >= 10:
+        med = median(prem_hist[:-1])
+        p = lin(prem_now - med, 0.03, -0.03, 0, 10)
+        reasons.append(f"Premi UBS {prem_now*100:.1f}% di atas harga dunia (median {med*100:.1f}%)"
+                       + (" — lebih murah dari biasanya." if prem_now < med else " — lebih mahal dari biasanya."))
+    else:
+        p = 5
+        if prem_now is not None:
+            reasons.append(f"Premi UBS {prem_now*100:.1f}% di atas harga dunia (riwayat belum cukup untuk dibandingkan).")
+    comp.append(("Premi UBS vs harga dunia", round(p, 1), 10))
+
+    score = round(sum(c[1] for c in comp))
+    capped = False
+    if falling and score >= BUY_SCORE:
+        score_eff = BUY_SCORE - 1
+        capped = True
+    else:
+        score_eff = score
+
+    if score_eff >= BUY_SCORE:
+        zone, label = "BELI", "Waktu yang baik untuk beli"
+        advice = "Harga murah dan sudah mulai stabil. Layak beli — tetap bagi 2–3 tahap agar tidak salah timing."
+    elif score_eff >= 50:
+        zone, label = "CICIL", "Cicil bertahap"
+        advice = ("Harga sudah murah, tapi masih turun. Beli sebagian kecil saja (mis. 1/3 dana), "
+                  "simpan sisanya sampai tren berbalik." if capped else
+                  "Harga cukup menarik. Cocok beli bertahap (DCA), jangan sekaligus.")
+    elif score_eff >= 35:
+        zone, label = "TUNGGU", "Tunggu dulu"
+        advice = "Harga di level wajar. Kalau tidak buru-buru, tunggu koreksi atau beli rutin kecil saja."
+    else:
+        zone, label = "MAHAL", "Mahal — tunda"
+        advice = "Harga relatif tinggi dibanding trennya. Lebih baik menunggu koreksi."
+
+    spread = None
+    if domestic and domestic[-1].get("ubs_jual") and domestic[-1].get("ubs_bb"):
+        spread = 1 - domestic[-1]["ubs_bb"] / domestic[-1]["ubs_jual"]
+        reasons.append(f"Selisih jual–buyback UBS {spread*100:.1f}%: harga harus naik sebesar ini dulu agar balik modal.")
+
+    reasons = [re.sub(r"(\d)\.(\d)", r"\1,\2", x) for x in reasons]
+    return {
+        "score": score, "score_eff": score_eff, "capped": capped,
+        "zone": zone, "label": label, "advice": advice,
+        "components": [{"name": n, "pts": pt, "max": mx} for n, pt, mx in comp],
+        "reasons": reasons,
+        "ind": {
+            "last_idr_g": round(last), "last_usd": usd[-1],
+            "ma20": ma20 and round(ma20), "ma50": ma50 and round(ma50), "ma200": ma200 and round(ma200),
+            "rsi": r and round(r, 1), "hi52": round(hi), "lo52": round(lo), "pos52": round(pos, 3),
+            "dd52": round(dd, 4), "chg5": round(chg5, 4), "chg30": round(chg30, 4),
+            "dev200": dev200 and round(dev200, 4), "premium_ubs": prem_now and round(prem_now, 4),
+            "spread_ubs": spread and round(spread, 4),
+        },
+    }
+
+
+# ======================= NOTIFIKASI =======================
+def ntfy(title, msg, priority="default", tags="moneybag"):
+    if not NTFY_TOPIC:
+        log("NTFY_TOPIC kosong, notif dilewati:", title)
+        return
+    # Header HTTP harus latin-1: judul dibuat ASCII
+    safe_title = title.encode("ascii", "ignore").decode()
+    req = urllib.request.Request(f"https://ntfy.sh/{NTFY_TOPIC}", data=msg.encode("utf-8"), method="POST",
+                                 headers={"Title": safe_title, "Priority": priority, "Tags": tags})
+    try:
+        urllib.request.urlopen(req, timeout=20).read()
+        log("notif terkirim:", title)
+    except Exception as e:  # noqa: BLE001
+        log("notif gagal:", e)
+
+
+def rp(v):
+    return "-" if v is None else "Rp" + f"{int(round(v)):,}".replace(",", ".")
+
+
+# ======================= UTAMA =======================
+def load():
+    try:
+        with open(DATA_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"world": [], "domestic": [], "state": {}}
+
+
+def main():
+    data = load()
+    now = datetime.now(WIB)
+    today = now.strftime("%Y-%m-%d")
+    status = {}
+
+    # ---- dunia ----
+    world_map = {w["d"]: w for w in data.get("world", [])}
+    try:
+        xau = stooq_history("xauusd")
+        status["dunia"] = "ok (stooq)"
+    except Exception as e:  # noqa: BLE001
+        log("stooq xauusd gagal:", e)
+        xau = {}
+        try:
+            xau = {today: spot_now()}
+            status["dunia"] = "ok (gold-api)"
+        except Exception as e2:  # noqa: BLE001
+            status["dunia"] = f"gagal: {e2}"
+    try:
+        fx = stooq_history("usdidr")
+    except Exception as e:  # noqa: BLE001
+        log("stooq usdidr gagal:", e)
+        fx = {}
+    if not fx or today not in fx:
+        try:
+            fx[today] = kurs_now()
+        except Exception as e:  # noqa: BLE001
+            log("kurs cadangan gagal:", e)
+    last_fx = None
+    for d in sorted(set(xau) | set(fx)):
+        if d in fx:
+            last_fx = fx[d]
+        if d in xau and last_fx:
+            world_map[d] = {"d": d, "usd": round(xau[d], 2), "kurs": round(last_fx, 1),
+                            "idr_g": round(xau[d] * last_fx / GRAM_PER_OZ)}
+    cutoff = (now - timedelta(days=365 * 3)).strftime("%Y-%m-%d")
+    world = [world_map[d] for d in sorted(world_map) if d >= cutoff]
+
+    # ---- domestik ----
+    manual = {k: rp_to_int(os.environ.get(k.upper(), "")) for k in
+              ("antam_jual", "antam_bb", "ubs_jual", "ubs_bb")}
+    rec = {"d": today}
+    try:
+        (aj, ab), (uj, ub) = galeri24_prices()
+        rec.update(antam_jual=aj, antam_bb=ab, ubs_jual=uj, ubs_bb=ub)
+        status["galeri24"] = f"antam={'ok' if aj else 'tidak ketemu'}, ubs={'ok' if uj else 'tidak ketemu'}"
+    except Exception as e:  # noqa: BLE001
+        status["galeri24"] = f"gagal: {e}"
+    if not rec.get("antam_jual"):
+        try:
+            aj, ab = logammulia_antam()
+            rec["antam_jual"], rec["antam_bb"] = aj, ab or rec.get("antam_bb")
+            status["logammulia"] = "ok" if aj else "tidak ketemu"
+        except Exception as e:  # noqa: BLE001
+            status["logammulia"] = f"gagal: {e}"
+    for k, v in manual.items():
+        if v:
+            rec[k] = v
+            status["manual"] = "harga manual dipakai"
+    if world:
+        rec["idr_g"] = world[-1]["idr_g"]
+
+    domestic = [x for x in data.get("domestic", []) if x["d"] != today]
+    prev_today = next((x for x in data.get("domestic", []) if x["d"] == today), {})
+    for k in ("antam_jual", "antam_bb", "ubs_jual", "ubs_bb"):
+        if not rec.get(k) and prev_today.get(k):
+            rec[k] = prev_today[k]          # jangan timpa data pagi dengan kosong
+    if any(rec.get(k) for k in ("antam_jual", "ubs_jual")):
+        domestic.append(rec)
+    domestic.sort(key=lambda x: x["d"])
+
+    if len(world) < 30:
+        log("Data dunia belum cukup untuk analisa.")
+        analysis = None
+    else:
+        analysis = analyze(world, domestic)
+
+    # ---- notifikasi ----
+    state = data.get("state", {})
+    last_dom = domestic[-1] if domestic else {}
+    if analysis:
+        z = analysis["zone"]
+        prev_zone = state.get("zone")
+        body = (f"{analysis['label']} (skor {analysis['score_eff']}/100)\n"
+                f"UBS 1g: {rp(last_dom.get('ubs_jual'))} | Antam 1g: {rp(last_dom.get('antam_jual'))}\n"
+                f"Dunia: ${analysis['ind']['last_usd']:,.0f}/oz\n{analysis['advice']}")
+        if z == "BELI" and prev_zone != "BELI":
+            ntfy("SINYAL BELI EMAS", body, priority="high", tags="rotating_light,moneybag")
+            state["beli_day"] = today
+        elif z == "BELI" and state.get("beli_day") != today and now.hour < 13:
+            # pengingat tiap pagi selama rekomendasi masih BELI
+            ntfy("Emas masih zona BELI", body, priority="high", tags="moneybag")
+            state["beli_day"] = today
+        elif NOTIF_CICIL and z == "CICIL" and prev_zone in ("TUNGGU", "MAHAL", None):
+            ntfy("Emas masuk zona CICIL", body, tags="chart_with_downwards_trend")
+        elif DAILY_DIGEST and state.get("digest_day") != today and now.hour < 13:
+            ntfy(f"Emas hari ini: {z}", body, priority="low", tags="sunrise")
+            state["digest_day"] = today
+        state["zone"] = z
+    for key, target, name in (("ubs_jual", TARGET_UBS, "UBS"), ("antam_jual", TARGET_ANTAM, "Antam")):
+        v = last_dom.get(key)
+        flag = f"target_{key}"
+        if target and v and v <= target and state.get(flag) != today:
+            ntfy(f"Harga {name} sampai target", f"{name} 1 gram {rp(v)} (target {rp(target)}).",
+                 priority="high", tags="dart")
+            state[flag] = today
+    if not last_dom.get("ubs_jual") and state.get("warn_day") != today and now.hour >= 13:
+        ntfy("Harga UBS gagal diambil", "Masukkan manual lewat Actions > Run workflow, atau cek log.",
+             priority="low", tags="warning")
+        state["warn_day"] = today
+
+    out = {
+        "version": VERSION,
+        "updated": now.isoformat(timespec="minutes"),
+        "status": status,
+        "analysis": analysis,
+        "world": world,
+        "domestic": domestic,
+        "state": state,
+        "settings": {"target_ubs": TARGET_UBS, "target_antam": TARGET_ANTAM, "buy_score": BUY_SCORE},
+    }
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
+    log("Selesai.", json.dumps(status, ensure_ascii=False))
+    if analysis:
+        log("Zona:", analysis["zone"], "skor", analysis["score_eff"])
+
+
+if __name__ == "__main__":
+    main()
