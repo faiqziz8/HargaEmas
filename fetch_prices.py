@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
-v1.5.0  © 2026 Faiq Aziz
+v1.5.1  © 2026 Faiq Aziz
 
 Mengambil:
   - Harga emas dunia + riwayat s.d. 20 tahun          : Bundesbank (cadangan: LBMA, Yahoo, freegoldapi, stooq, datahub bulanan, gold-api)
@@ -22,7 +22,7 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
 WIB = timezone(timedelta(hours=7))
 GRAM_PER_OZ = 31.1034768
@@ -681,7 +681,21 @@ def main():
     world = [world_map[d] for d in sorted(world_map)
              if d >= cutoff and not (world_map[d].get("m") and d >= first_daily)]
     status["dunia"] = ", ".join(src) if src else "gagal semua sumber"
+    # tandai titik yang jarang (jarak ke titik berikutnya > 6 hari) sebagai data bulanan/jarang
+    for a_, b_ in zip(world, world[1:]):
+        gap = (datetime.strptime(b_["d"], "%Y-%m-%d") - datetime.strptime(a_["d"], "%Y-%m-%d")).days
+        if gap > 6:
+            a_["m"] = 1
+        else:
+            a_.pop("m", None)
+    dense = 0
+    for w_ in reversed(world):
+        if w_.get("m"):
+            break
+        dense += 1
+    status["data harian"] = f"{dense} hari terakhir harian, {len(world) - dense} titik lama bulanan/jarang"
     world_daily = [w for w in world if not w.get("m")]
+    series_full = interpolate_daily(world) if len(world) >= 2 else []
 
     # ---- riwayat Antam (grafik Logam Mulia) ----
     antam_hist = {x["d"]: x for x in data.get("antam_hist", [])}
@@ -732,23 +746,17 @@ def main():
         domestic.append(rec)
     domestic.sort(key=lambda x: x["d"])
 
-    if len(world_daily) >= 220:
-        analysis = analyze(world_daily, domestic)
-    elif len(world) >= 15:
-        log("Data harian belum cukup, analisa memakai data bulanan.")
-        analysis = analyze(interpolate_daily(world), domestic, approx=True)
+    if len(series_full) >= 260:
+        # deret hari kerja lengkap (titik jarang diinterpolasi); RSI/momentum harian hanya bila ekor datanya harian
+        analysis = analyze(series_full, domestic, approx=dense < 30)
     else:
         log("Data dunia belum cukup untuk analisa.")
         analysis = None
 
     # ---- uji historis ----
     try:
-        if len(world_daily) >= 300:
-            bt = backtest(world_daily)
-        elif len(world) >= 30:
-            bt = backtest(interpolate_daily(world), approx=True)
-        else:
-            bt = None
+        # pakai seluruh riwayat 20 tahun; mode 'approx' (tanpa RSI) bila sebagian besar data lama bukan harian
+        bt = backtest(series_full, approx=dense < 2000) if len(series_full) >= 300 else None
     except Exception as e:  # noqa: BLE001
         log("backtest gagal:", e)
         bt = data.get("backtest")

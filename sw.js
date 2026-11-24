@@ -1,6 +1,6 @@
-// Monitor Harga Emas v1.5.0 — © 2026 Faiq Aziz
+// Monitor Harga Emas v1.6.0 — © 2026 Faiq Aziz
 // Service worker: aplikasi tetap bisa dibuka tanpa internet (pakai data terakhir).
-const CACHE = "emas-v1.5.0";
+const CACHE = "emas-v1.6.0";
 const SHELL = ["./", "index.html", "apple-touch-icon.png", "manifest.webmanifest",
   "https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"];
 

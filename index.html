@@ -146,7 +146,7 @@ textarea{font-size:12px;min-height:90px}
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
 
 <script>
-const VERSION = "1.5.0", YEAR = 2026;
+const VERSION = "1.6.0", YEAR = 2026;
 let DATA = null, chart = null, range = 90, simBrand = "ubs", VIEW = "home", fromCache = false;
 const series = { ubs: true, antam: true, world: true, ma: false };
 const store = { get: (k, d) => { try { const v = localStorage.getItem("emas." + k); return v == null ? d : v; } catch (e) { return d; } },
@@ -299,6 +299,45 @@ function antamSeries() {
 }
 function maSeries(vals, n) { const o = []; let s = 0; for (let i = 0; i < vals.length; i++) { s += vals[i]; if (i >= n) s -= vals[i - n]; o.push(i >= n - 1 ? s / n : null); } return o; }
 
+/* ================= ATURAN BELI ================= */
+// Porsi dana bulan ini yang dibelikan emas, menurut zona. BELI juga memakai seluruh dana cadangan.
+const RULE = { BELI: 1, CICIL: 0.5, CICIL_cap: 1 / 3, TUNGGU: 0.25, MAHAL: 0 };
+const RULE_Z = { B: 1, C: 0.5, T: 0.25, M: 0 };
+function bestBrand() {
+  let best = null;
+  for (const b of Object.keys(BRANDS)) { const d = lastBy(b + "_jual"), j = d[b + "_jual"], bb = d[b + "_bb"];
+    if (j && bb) { const be = j / bb - 1; if (!best || be < best.be) best = { b, j, bb, be }; } }
+  return best;
+}
+function planHTML() {
+  const A = DATA.analysis; if (!A) return "";
+  const M = parseFloat(store.get("dcaM", "2000000")) || 0, C = parseFloat(store.get("cad", "0")) || 0;
+  const key = A.zone === "CICIL" && A.capped ? "CICIL_cap" : A.zone, frac = RULE[key];
+  const buy = A.zone === "BELI" ? M + C : M * frac, save = A.zone === "BELI" ? 0 : M - buy;
+  const bb = bestBrand();
+  const soon = EVENTS.find(e => { const dt = new Date(e[0] + "+07:00") - Date.now(); return e[1] !== "strat" && dt > 0 && dt < 3 * 864e5; });
+  const evName = e => e[1] === "fomc" ? L("keputusan The Fed", "the Fed decision") : L("rilis inflasi AS", "the US inflation release");
+  return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">${L("Rencana beli bulan ini", "This month's buying plan")}</h2>
+    <button class="btn" id="planEdit" style="padding:4px 9px;font-size:12px">${L("Ubah dana", "Edit funds")}</button></div>
+    <div class="kpi" style="margin-top:10px"><div><span>${L("Belikan emas", "Buy gold")}</span><b class="${buy > 0 ? "up" : ""}">${R(buy)}</b><span>${P(A.zone === "BELI" ? 1 : frac, 0)} ${L("dana bulan ini", "of this month")}${A.zone === "BELI" && C ? L(" + cadangan", " + reserve") : ""}</span></div>
+    <div><span>${L("Simpan ke cadangan", "Add to reserve")}</span><b>${R(save)}</b><span>${L("cadangan jadi ", "reserve becomes ")}${R(A.zone === "BELI" ? 0 : C + save)}</span></div></div>
+    ${buy > 0 && bb ? `<div class="res">≈ <b>${N(buy / bb.j, 2)} gram ${BRANDS[bb.b]}</b> ${L("— merek paling cepat balik modal hari ini", "— fastest break-even brand today")} (${R(bb.j)}/g, ${L("balik modal", "break-even")} +${P(bb.be)}).</div>` : ""}
+    ${soon ? `<div class="note">⏳ ${L(`Ada ${evName(soon)} ${evRow0(soon)}. Harga sering bergejolak di sekitar jadwal ini — pertimbangkan membeli setelahnya.`, `${evName(soon)} is ${evRow0(soon)}. Prices often swing around it — consider buying after.`)}</div>` : ""}
+    <div class="sub" style="margin-top:8px">${L("Aturan: BELI = 100% dana + seluruh cadangan · CICIL = 50% (33% bila masih turun tajam) · TUNGGU = 25% · MAHAL = 0%, semua sisa ditabung ke cadangan.",
+      "Rule: BUY = 100% + all reserve · ACCUMULATE = 50% (33% if still falling sharply) · WAIT = 25% · EXPENSIVE = 0%; the rest goes to reserve.")}
+      <a href="#alat" style="color:var(--gold2)">${L("Lihat hasil historis aturan ini →", "See this rule's historical results →")}</a></div></div>`;
+}
+const evRow0 = e => { const d = Math.ceil((new Date(e[0] + "+07:00") - Date.now()) / 864e5);
+  return d <= 1 ? L("besok/hari ini", "today/tomorrow") : L(`${d} hari lagi`, `in ${d} days`); };
+function planSheet() {
+  openSheet(`<h3>${L("Dana untuk emas", "Gold budget")}<button class="btn" id="shClose">${L("Batal", "Cancel")}</button></h3>
+    <div class="f2"><div><label>${L("Dana per bulan (Rp)", "Monthly budget (Rp)")}</label><input type="number" inputmode="numeric" id="pM" value="${store.get("dcaM", "2000000")}"></div>
+    <div><label>${L("Dana cadangan saat ini (Rp)", "Current reserve (Rp)")}</label><input type="number" inputmode="numeric" id="pC" value="${store.get("cad", "0")}"></div></div>
+    <div class="sub" style="margin:8px 0">${L("Dana cadangan = uang emas yang sudah Anda sisihkan tapi belum dibelikan. Akan dipakai saat sinyal BELI.", "Reserve = gold money set aside but not yet spent. It's deployed on a BUY signal.")}</div>
+    <button class="btn pri full" id="pSave">${L("Simpan", "Save")}</button>`);
+  $("pSave").onclick = () => { store.set("dcaM", $("pM").value || "0"); store.set("cad", $("pC").value || "0"); closeSheet(); vHome(); };
+}
+
 /* ================= BERANDA ================= */
 function vHome() {
   const el = $("v-home"); if (!DATA) { el.innerHTML = ""; return; }
@@ -319,6 +358,7 @@ function vHome() {
     ${A && A.capped ? `<div class="note">${L("⚠️ Secara harga sudah masuk zona BELI, tapi tren masih turun tajam — skor dibatasi ke zona CICIL.", "⚠️ Price alone says BUY, but the trend is still falling sharply — capped at ACCUMULATE.")}</div>` : ""}
     <div style="margin-top:10px"><a href="#analisa" class="sub" style="color:var(--gold2)">${L("Lihat analisa lengkap →", "See full analysis →")}</a></div>
   </div>
+  ${planHTML()}
   <div class="grid">
     ${["ubs", "antam"].map(b => `<div class="pc"><div class="n"><span>${BRANDS[b]} 1 gram</span>${chgEl(last[b + "_jual"], prev[b + "_jual"])}</div>
       <div class="v">${R(last[b + "_jual"])}</div><div class="bb">Buyback ${R(last[b + "_bb"])}</div></div>`).join("")}
@@ -340,6 +380,7 @@ function vHome() {
   ${nextEv ? `<a href="#analisa" style="text-decoration:none;color:inherit"><div class="card"><h2>${L("Peristiwa terdekat", "Next market event")}</h2>${evRow(nextEv)}</div></a>` : ""}`;
   $("ranges").onclick = e => { const t = e.target.closest(".tab"); if (!t) return; range = +t.dataset.r; [...$("ranges").children].forEach(x => x.classList.toggle("on", x === t)); drawChart(); };
   $("series").onclick = e => { const t = e.target.closest(".tab"); if (!t) return; series[t.dataset.s] = !series[t.dataset.s]; t.classList.toggle("on", series[t.dataset.s]); drawChart(); };
+  if ($("planEdit")) $("planEdit").onclick = planSheet;
   drawChart(); liveSpotPaint();
 }
 function drawChart() {
@@ -554,9 +595,14 @@ function dca() {
   const zm = {}; (DATA.backtest?.monthly || []).forEach(([d, z]) => zm[d.slice(0, 7)] = z);
   let g3 = 0, cash = 0, hasZ = Object.keys(zm).length > 0;
   months.forEach(([d, p]) => { cash += M; const z = zm[d.slice(0, 7)]; if (z === "B" || z === "C") { g3 += cash / p; cash = 0; } });
+  // 4) ikuti aturan aplikasi (porsi per zona, sisa ke cadangan, cadangan dipakai saat BELI)
+  let g4 = 0, cad = 0;
+  months.forEach(([d, p]) => { const z = zm[d.slice(0, 7)];
+    if (z === "B") { g4 += (M + cad) / p; cad = 0; } else { const f = RULE_Z[z] ?? 1; g4 += M * f / p; cad += M * (1 - f); } });
   const val = g => g * bbNow;
   const rows = [[L("Beli rutin tiap bulan (DCA)", "Monthly DCA"), g1, 0], [L("Sekaligus di awal", "Lump sum at start"), g2, 0]];
-  if (hasZ) rows.push([L("Tabung & beli hanya saat sinyal BELI/CICIL", "Save & buy only on BUY/ACCUMULATE"), g3, cash]);
+  if (hasZ) { rows.push([L("Tabung & beli hanya saat sinyal BELI/CICIL", "Save & buy only on BUY/ACCUMULATE"), g3, cash]);
+    rows.push(["⭐ " + L("Ikuti aturan aplikasi (Rencana beli)", "Follow the app's rule (Buying plan)"), g4, cad]); }
   const best = Math.max(...rows.map(r => val(r[1]) + r[2]));
   $("dRes").innerHTML = `<div class="sub">${L(`${n} bulan × ${R(M)} = total ${R(total)}. Dinilai dengan buyback Antam hari ini (${R(bbNow)}/g).`, `${n} months × ${R(M)} = ${R(total)} total. Valued at today's Antam buyback (${R(bbNow)}/g).`)}</div>
     <table style="margin-top:6px"><tr><th>${L("Strategi", "Strategy")}</th><th>Gram</th><th>${L("Nilai akhir", "End value")}</th><th>${L("Hasil", "Return")}</th></tr>
