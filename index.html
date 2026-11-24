@@ -112,6 +112,7 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
   <div class="tabs" id="ranges">
     <span class="tab" data-r="30">1B</span><span class="tab on" data-r="90">3B</span><span class="tab" data-r="180">6B</span>
     <span class="tab" data-r="365">1T</span><span class="tab" data-r="1095">3T</span>
+    <span class="tab" data-r="1826">5T</span><span class="tab" data-r="3652">10T</span><span class="tab" data-r="7305">20T</span>
   </div>
   <div class="tabs" id="series">
     <span class="tab on" data-s="ubs">UBS</span><span class="tab on" data-s="antam">Antam</span>
@@ -167,10 +168,10 @@ input,select{width:100%;background:var(--card2);border:1px solid var(--line);col
   </details>
 </div>
 
-<div class="foot">v1.1.1 · © 2026 Faiq Aziz · Data: Galeri24, Logam Mulia, Stooq, gold-api.com</div>
+<div class="foot">v1.2.0 · © 2026 Faiq Aziz · Data: Galeri24, Logam Mulia, Yahoo Finance, FRED, gold-api.com</div>
 
 <script>
-const VERSION = "1.1.1";
+const VERSION = "1.2.0";
 let DATA = null, chart = null, range = 90;
 const series = { ubs: true, antam: true, world: true, ma: false };
 const $ = id => document.getElementById(id);
@@ -267,38 +268,54 @@ function maSeries(vals, n) {
 
 function drawChart() {
   if (typeof Chart === "undefined") { $("chartNote").textContent = "Grafik tidak bisa dimuat (cek koneksi internet)."; return; }
-  const W = DATA.world || [], D = DATA.domestic || [];
+  const W = DATA.world || [], D = DATA.domestic || [], H = DATA.antam_hist || [];
   const cut = new Date(); cut.setDate(cut.getDate() - range);
   const cutS = cut.toISOString().slice(0, 10);
   const wMap = Object.fromEntries(W.map(x => [x.d, x]));
   const dMap = Object.fromEntries(D.map(x => [x.d, x]));
+  const hMap = Object.fromEntries(H.map(x => [x.d, x]));
   const ma50 = maSeries(W.map(x => x.idr_g), 50), ma200 = maSeries(W.map(x => x.idr_g), 200);
-  const maMap = {}; W.forEach((x, i) => maMap[x.d] = [ma50[i], ma200[i]]);
-  const dates = [...new Set([...W.map(x => x.d), ...D.map(x => x.d)])].filter(d => d >= cutS).sort();
+  const maMap = {}; W.forEach((x, i) => { if (!x.m) maMap[x.d] = [ma50[i], ma200[i]]; });
+  let dates = [...new Set([...W.map(x => x.d), ...D.map(x => x.d), ...H.map(x => x.d)])].filter(d => d >= cutS).sort();
+  // perkecil jumlah titik untuk rentang panjang agar ringan di HP (titik terakhir selalu ikut)
+  const MAXP = 900;
+  if (dates.length > MAXP) {
+    const k = Math.ceil(dates.length / MAXP);
+    dates = dates.filter((d, i) => i % k === 0 || i === dates.length - 1 || dMap[d]);
+  }
+  const antamVal = d => dMap[d]?.antam_jual ?? hMap[d]?.jual ?? null;
+  const pr = dates.length < 40 ? 2 : 0;
   const ds = [];
-  if (series.ubs) ds.push({ label: "UBS", data: dates.map(d => dMap[d]?.ubs_jual ?? null), borderColor: "#e3b341", backgroundColor: "#e3b341", spanGaps: true, pointRadius: dates.length < 40 ? 2 : 0, borderWidth: 2 });
-  if (series.antam) ds.push({ label: "Antam", data: dates.map(d => dMap[d]?.antam_jual ?? null), borderColor: "#f3ecdc", backgroundColor: "#f3ecdc", spanGaps: true, pointRadius: dates.length < 40 ? 2 : 0, borderWidth: 2 });
+  if (series.ubs) ds.push({ label: "UBS", data: dates.map(d => dMap[d]?.ubs_jual ?? null), borderColor: "#e3b341", backgroundColor: "#e3b341", spanGaps: true, pointRadius: pr, borderWidth: 2 });
+  if (series.antam) ds.push({ label: "Antam", data: dates.map(antamVal), borderColor: "#f3ecdc", backgroundColor: "#f3ecdc", spanGaps: true, pointRadius: pr, borderWidth: 2 });
   if (series.world) ds.push({ label: "Dunia", data: dates.map(d => wMap[d]?.idr_g ?? null), borderColor: "#6aa7e8", backgroundColor: "#6aa7e8", spanGaps: true, pointRadius: 0, borderWidth: 1.6 });
   if (series.ma) {
     ds.push({ label: "Rata² 50h", data: dates.map(d => maMap[d]?.[0] ?? null), borderColor: "#3fb97a", borderDash: [5, 4], spanGaps: true, pointRadius: 0, borderWidth: 1.3 });
     ds.push({ label: "Rata² 200h", data: dates.map(d => maMap[d]?.[1] ?? null), borderColor: "#e5604f", borderDash: [5, 4], spanGaps: true, pointRadius: 0, borderWidth: 1.3 });
   }
+  const long = range > 1100;
   const cfg = {
-    type: "line", data: { labels: dates.map(fmtD), datasets: ds },
+    type: "line", data: { labels: dates.map(d => long ? new Date(d + "T00:00:00").toLocaleDateString("id-ID", { month: "short", year: "numeric" }) : fmtD(d)), datasets: ds },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
       plugins: { legend: { labels: { color: "#a99d84", boxWidth: 12, font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => c.dataset.label + ": " + rp(c.parsed.y) } } },
+        tooltip: { callbacks: { title: it => fmtD(dates[it[0].dataIndex]), label: c => c.dataset.label + ": " + rp(c.parsed.y) } } },
       scales: {
         x: { ticks: { color: "#a99d84", maxTicksLimit: 6, maxRotation: 0, font: { size: 10.5 } }, grid: { color: "rgba(255,255,255,.04)" } },
-        y: { ticks: { color: "#a99d84", font: { size: 10.5 }, callback: v => (v / 1e6).toFixed(2).replace(".", ",") + " jt" }, grid: { color: "rgba(255,255,255,.06)" } }
+        y: { ticks: { color: "#a99d84", font: { size: 10.5 }, callback: v => (v / 1e6).toFixed(v < 1e6 ? 2 : 1).replace(".", ",") + " jt" }, grid: { color: "rgba(255,255,255,.06)" } }
       }
     }
   };
   if (chart) chart.destroy();
   chart = new Chart($("chart"), cfg);
-  const nDom = D.filter(x => x.d >= cutS).length;
-  $("chartNote").textContent = nDom < 5 ? "Riwayat UBS & Antam baru mulai terkumpul sejak aplikasi dipasang; garis biru (dunia) sudah punya riwayat panjang." : "";
+  const notes = [];
+  const firstW = W.find(x => x.d >= cutS);
+  if (W.length && W[0].d > cutS) notes.push("Riwayat dunia tersedia sejak " + fmtD(W[0].d) + ".");
+  if (W.some(x => x.m && x.d >= cutS)) notes.push("Data dunia lama memakai harga bulanan.");
+  const firstU = D.find(x => x.ubs_jual);
+  if (series.ubs && firstU && firstU.d > cutS) notes.push("Riwayat UBS dikumpulkan sejak " + fmtD(firstU.d) + " (tidak ada sumber riwayat UBS gratis).");
+  if (series.antam && H.length) notes.push("Antam sebelum " + fmtD((D.find(x => x.antam_jual) || {}).d || DATA.updated.slice(0, 10)) + " dari grafik Logam Mulia.");
+  $("chartNote").textContent = notes.join(" ");
 }
 
 function sim() {

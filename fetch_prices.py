@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
-v1.1.0  © 2026 Faiq Aziz
+v1.2.0  © 2026 Faiq Aziz
 
 Mengambil:
-  - Harga emas dunia (XAU/USD) + riwayat harian      : stooq.com (cadangan: gold-api.com)
-  - Kurs USD/IDR + riwayat                            : stooq.com (cadangan: open.er-api.com)
+  - Harga emas dunia + riwayat s.d. 20 tahun          : Yahoo Finance GC=F (cadangan: stooq, datahub bulanan, gold-api)
+  - Kurs USD/IDR + riwayat                            : Yahoo Finance IDR=X (cadangan: stooq, FRED bulanan, open.er-api)
+  - Riwayat Antam                                     : grafik logammulia.com (jika tersedia)
   - Harga Antam & UBS (jual + buyback, 1 gram)        : galeri24.co.id (cadangan Antam: logammulia.com)
 Lalu menghitung skor analisa, menyimpan ke prices.json, dan mengirim notifikasi ntfy.
 
@@ -21,7 +22,7 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
 WIB = timezone(timedelta(hours=7))
 GRAM_PER_OZ = 31.1034768
@@ -68,6 +69,80 @@ def stooq_history(symbol):
             continue
     if len(out) < 10:
         raise RuntimeError(f"stooq {symbol}: data terlalu sedikit")
+    return out
+
+
+def yahoo_history(symbol):
+    """Riwayat harian Yahoo Finance (GC=F emas berjangka sejak 2000, IDR=X kurs). {YYYY-MM-DD: close}"""
+    last_err = None
+    for host in ("query1", "query2"):
+        try:
+            j = json.loads(get(f"https://{host}.finance.yahoo.com/v8/finance/chart/{symbol}"
+                               f"?range=max&interval=1d&includePrePost=false", timeout=40))
+            res = j["chart"]["result"][0]
+            ts, cl = res["timestamp"], res["indicators"]["quote"][0]["close"]
+            out = {}
+            for t, c in zip(ts, cl):
+                if c:
+                    out[datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")] = float(c)
+            if len(out) > 100:
+                return out
+            last_err = RuntimeError("data sedikit")
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+    raise RuntimeError(f"yahoo {symbol}: {last_err}")
+
+
+def monthly_gold_history():
+    """Cadangan riwayat panjang (bulanan, USD/oz) dari dataset publik datasets/gold-prices."""
+    txt = get("https://raw.githubusercontent.com/datasets/gold-prices/main/data/monthly.csv")
+    out = {}
+    for row in csv.DictReader(io.StringIO(txt)):
+        try:
+            d = row.get("Date") or row.get("date")
+            out[(d + "-15")[:10] if len(d) == 7 else d[:10]] = float(row.get("Price") or row.get("price"))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def monthly_idr_history():
+    """Cadangan kurs bulanan USD/IDR dari FRED (St. Louis Fed)."""
+    txt = get("https://fred.stlouisfed.org/graph/fredgraph.csv?id=CCUSMA02IDM618N")
+    out = {}
+    for row in csv.reader(io.StringIO(txt)):
+        try:
+            out[row[0][:8] + "15"] = float(row[1])
+        except (IndexError, ValueError):
+            continue
+    return out
+
+
+def logammulia_history():
+    """Coba ambil riwayat harga Antam dari grafik situs Logam Mulia. {d: {'jual':x,'bb':y}}"""
+    out = {}
+    for kind, key in (("sell", "jual"), ("buy", "bb")):
+        # 'sell' = harga jual Antam ke konsumen, 'buy' = buyback
+        try:
+            raw = json.loads(get(f"https://www.logammulia.com/data-base-price/gold/{kind}", timeout=40))
+            rows = raw.get("data", raw) if isinstance(raw, dict) else raw
+            for r in rows:
+                if isinstance(r, (list, tuple)) and len(r) >= 2:
+                    t, v = r[0], r[1]
+                elif isinstance(r, dict):
+                    t = r.get("x") or r.get("date") or r.get("tanggal") or r.get("created_at")
+                    v = r.get("y") or r.get("price") or r.get("harga")
+                else:
+                    continue
+                if isinstance(t, (int, float)):
+                    d = datetime.fromtimestamp(t / (1000 if t > 1e11 else 1), WIB).strftime("%Y-%m-%d")
+                else:
+                    d = str(t)[:10]
+                v = float(v)
+                if 100_000 < v < 20_000_000:
+                    out.setdefault(d, {})[key] = int(v)
+        except Exception as e:  # noqa: BLE001
+            log(f"logammulia riwayat {kind} gagal:", e)
     return out
 
 
@@ -342,29 +417,47 @@ def main():
     today = now.strftime("%Y-%m-%d")
     status = {}
 
-    # ---- dunia ----
+    # ---- dunia (riwayat sampai 20 tahun) ----
     world_map = {w["d"]: w for w in data.get("world", [])}
-    try:
-        xau = stooq_history("xauusd")
-        status["dunia"] = "ok (stooq)"
-    except Exception as e:  # noqa: BLE001
-        log("stooq xauusd gagal:", e)
-        xau = {}
+    xau, fx, src = {}, {}, []
+    for name, fn in (("yahoo", lambda: yahoo_history("GC=F")), ("stooq", lambda: stooq_history("xauusd"))):
         try:
-            xau = {today: spot_now()}
-            status["dunia"] = "ok (gold-api)"
-        except Exception as e2:  # noqa: BLE001
-            status["dunia"] = f"gagal: {e2}"
-    try:
-        fx = stooq_history("usdidr")
-    except Exception as e:  # noqa: BLE001
-        log("stooq usdidr gagal:", e)
-        fx = {}
-    if not fx or today not in fx:
+            xau = fn(); src.append(f"emas harian {name} ({len(xau)} hari)"); break
+        except Exception as e:  # noqa: BLE001
+            log(name, "emas gagal:", e)
+    for name, fn in (("yahoo", lambda: yahoo_history("IDR=X")), ("stooq", lambda: stooq_history("usdidr"))):
+        try:
+            fx = fn(); src.append(f"kurs harian {name}"); break
+        except Exception as e:  # noqa: BLE001
+            log(name, "kurs gagal:", e)
+    if today not in xau:
+        try:
+            xau[today] = spot_now(); src.append("spot hari ini gold-api")
+        except Exception as e:  # noqa: BLE001
+            log("gold-api gagal:", e)
+    if today not in fx:
         try:
             fx[today] = kurs_now()
         except Exception as e:  # noqa: BLE001
-            log("kurs cadangan gagal:", e)
+            log("kurs hari ini gagal:", e)
+    # cadangan riwayat panjang bulanan bila riwayat harian belum panjang
+    n_daily = len([w for w in world_map.values() if not w.get("m")]) + len(xau)
+    has_monthly = any(w.get("m") for w in world_map.values())
+    if n_daily < 2000 and not has_monthly:
+        try:
+            mg = monthly_gold_history()
+            mf = monthly_idr_history()
+            last = None
+            first_daily = min([d for d in xau] + [d for d, w in world_map.items() if not w.get("m")] or [today])
+            for d in sorted(set(mg) | set(mf)):
+                if d in mf:
+                    last = mf[d]
+                if d in mg and last and d < first_daily:
+                    world_map[d] = {"d": d, "usd": round(mg[d], 2), "kurs": round(last, 1),
+                                    "idr_g": round(mg[d] * last / GRAM_PER_OZ), "m": 1}
+            src.append("riwayat bulanan datahub+FRED")
+        except Exception as e:  # noqa: BLE001
+            log("riwayat bulanan gagal:", e)
     last_fx = None
     for d in sorted(set(xau) | set(fx)):
         if d in fx:
@@ -372,8 +465,28 @@ def main():
         if d in xau and last_fx:
             world_map[d] = {"d": d, "usd": round(xau[d], 2), "kurs": round(last_fx, 1),
                             "idr_g": round(xau[d] * last_fx / GRAM_PER_OZ)}
-    cutoff = (now - timedelta(days=365 * 3)).strftime("%Y-%m-%d")
-    world = [world_map[d] for d in sorted(world_map) if d >= cutoff]
+    # hapus titik bulanan yang sudah tertutup data harian
+    first_daily = min([d for d, w in world_map.items() if not w.get("m")] or [today])
+    cutoff = (now - timedelta(days=365 * 20 + 5)).strftime("%Y-%m-%d")
+    world = [world_map[d] for d in sorted(world_map)
+             if d >= cutoff and not (world_map[d].get("m") and d >= first_daily)]
+    status["dunia"] = ", ".join(src) if src else "gagal semua sumber"
+    world_daily = [w for w in world if not w.get("m")]
+
+    # ---- riwayat Antam (grafik Logam Mulia) ----
+    antam_hist = {x["d"]: x for x in data.get("antam_hist", [])}
+    if len(antam_hist) < 200 or now.weekday() == 0:
+        lm = logammulia_history()
+        for d, v in lm.items():
+            vals = [x for x in (v.get("jual"), v.get("bb")) if x]
+            if not vals:
+                continue
+            e = {"d": d, "jual": max(vals)}
+            if len(vals) == 2:
+                e["bb"] = min(vals)
+            antam_hist[d] = e
+        status["riwayat antam"] = f"{len(antam_hist)} hari" + ("" if lm else " (sumber Logam Mulia tidak tersedia)")
+    antam_hist = [antam_hist[d] for d in sorted(antam_hist)]
 
     # ---- domestik ----
     manual = {k: rp_to_int(os.environ.get(k.upper(), "")) for k in
@@ -408,11 +521,11 @@ def main():
         domestic.append(rec)
     domestic.sort(key=lambda x: x["d"])
 
-    if len(world) < 30:
-        log("Data dunia belum cukup untuk analisa.")
+    if len(world_daily) < 30:
+        log("Data dunia harian belum cukup untuk analisa.")
         analysis = None
     else:
-        analysis = analyze(world, domestic)
+        analysis = analyze(world_daily, domestic)
 
     # ---- notifikasi ----
     state = data.get("state", {})
@@ -455,6 +568,7 @@ def main():
         "analysis": analysis,
         "world": world,
         "domestic": domestic,
+        "antam_hist": antam_hist,
         "state": state,
         "settings": {"target_ubs": TARGET_UBS, "target_antam": TARGET_ANTAM, "buy_score": BUY_SCORE},
     }
