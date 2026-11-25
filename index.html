@@ -86,7 +86,7 @@ textarea{font-size:12px;min-height:90px}
 .foot{text-align:center;color:var(--mute);font-size:11.5px;margin-top:14px}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:4px;vertical-align:middle}
 .err{background:color-mix(in srgb,var(--red) 12%,transparent);border:1px solid color-mix(in srgb,var(--red) 40%,transparent);color:var(--red);border-radius:12px;padding:10px;font-size:13px;margin-bottom:12px;display:none}
-.kpi{display:grid;grid-template-columns:1fr 1fr;gap:8px}.kpi div{background:var(--card2);border-radius:12px;padding:10px}
+.kpi{display:grid;grid-template-columns:1fr 1fr;gap:8px}.kpi>div{background:var(--card2);border-radius:12px;padding:10px}.kpi .bar{background:var(--line)}
 .kpi b{display:block;font-size:17px;margin-top:2px}.kpi span{font-size:11.5px;color:var(--mute)}
 .ev{display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);align-items:center}
 .ev .dt{min-width:52px;text-align:center;background:var(--card2);border-radius:10px;padding:5px 4px;font-size:11px;color:var(--mute)}
@@ -146,7 +146,7 @@ textarea{font-size:12px;min-height:90px}
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
 
 <script>
-const VERSION = "1.7.0", YEAR = 2026;
+const VERSION = "1.8.0", YEAR = 2026;
 let DATA = null, chart = null, range = 90, simBrand = "ubs", VIEW = "home", fromCache = false;
 const series = { ubs: true, antam: true, world: true, ma: false };
 const store = { get: (k, d) => { try { const v = localStorage.getItem("emas." + k); return v == null ? d : v; } catch (e) { return d; } },
@@ -267,14 +267,31 @@ const RTXT = {
   prem: v => L(`Premi UBS ${P(v)} di atas harga dunia (riwayat belum cukup untuk dibandingkan).`, `UBS premium is ${P(v)} over world price (not enough history to compare yet).`),
   spread: v => L(`Selisih jual–buyback UBS ${P(v)}: harga harus naik sebesar ini dulu agar balik modal.`, `UBS buy–buyback spread is ${P(v)}: price must rise this much before you break even.`),
   approx: () => L("Catatan: data harian dunia belum tersedia, analisa memakai data bulanan (RSI belum dihitung).", "Note: daily world data isn't available yet, so the analysis uses monthly data (RSI not computed)."),
+  t_low: v => v < 5 ? L(`Harga masih membuat titik terendah baru (${v} hari sejak terendah 1 tahun) — penurunan belum berhenti.`, `Still printing new lows (${v} days since the 1-year low) — the decline hasn't stopped.`)
+    : v < 20 ? L(`Sudah ${v} hari tanpa titik terendah baru — mulai membentuk dasar.`, `${v} days without a new low — starting to form a base.`)
+    : L(`Sudah ${v} hari tidak membuat titik terendah baru — dasar harga cukup teruji.`, `${v} days without a new low — the base looks tested.`),
+  t_ma50: v => L(`Harga ${P(Math.abs(v))} ${v >= 0 ? "di atas" : "di bawah"} rata-rata 50 hari — tren menengah ${v >= 0 ? "naik" : "masih turun"}.`, `Price is ${P(Math.abs(v))} ${v >= 0 ? "above" : "below"} its 50-day average — medium-term trend ${v >= 0 ? "up" : "still down"}.`),
+  t_slope: v => L(`Rata-rata 20 hari ${v > 0.005 ? "mulai naik" : v < -0.005 ? "masih menurun" : "mendatar"} (${SP(v)} dalam 10 hari).`, `The 20-day average is ${v > 0.005 ? "turning up" : v < -0.005 ? "still falling" : "flat"} (${SP(v)} over 10 days).`),
+  r_event: (v, m, x) => { const nm = x.e === "fomc" ? L("Keputusan suku bunga The Fed", "Fed rate decision") : L("Rilis inflasi AS (CPI)", "US CPI release");
+    const at = new Date(x.at.replace(" ", "T") + ":00+07:00").toLocaleString(LOC(), { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    return L(`⚠️ ${nm} ${at} WIB (${N(v, 0)} hari lagi). Harga bisa bergejolak — jangan beli semua sebelum peristiwa ini.`, `⚠️ ${nm} ${at} WIB (in ${N(v, 0)} days). Expect volatility — don't buy everything before it.`); },
+  r_vol: v => L(`⚠️ Pasar sedang bergejolak (volatilitas ${N(v, 1)}× biasanya) — perkecil ukuran tiap pembelian.`, `⚠️ Market is volatile (${N(v, 1)}× usual volatility) — use smaller tranches.`),
 };
+const COMP2 = { v_dev200: ["Harga vs rata-rata 200 hari", "Price vs 200-day average"], v_pos52: ["Posisi di rentang 1 tahun", "Position in 1-year range"],
+  v_dd52: ["Diskon dari puncak 1 tahun", "Discount from 1-year high"], v_rsi: ["RSI 14 hari (jenuh jual)", "14-day RSI (oversold)"], v_prem: ["Premi UBS vs biasanya", "UBS premium vs usual"],
+  t_ma50: ["Harga vs rata-rata 50 hari", "Price vs 50-day average"], t_slope: ["Arah rata-rata 20 hari", "20-day average direction"],
+  t_low: ["Berhenti membuat titik terendah baru", "No longer making new lows"], t_mom: ["Momentum 1 bulan", "1-month momentum"], t_ma200: ["Di atas rata-rata 200 hari (tren besar)", "Above 200-day avg (big trend)"] };
 const COMP = { dev200: ["Harga vs rata-rata 200 hari", "Price vs 200-day average"], rsi: ["RSI 14 hari", "14-day RSI"], pos52: ["Posisi di rentang 1 tahun", "Position in 1-year range"],
   dd52: ["Koreksi dari puncak 1 tahun", "Drawdown from 1-year high"], mom: ["Momentum jangka pendek", "Short-term momentum"], prem: ["Premi UBS vs harga dunia", "UBS premium vs world price"] };
-const ADV = z => ({ BELI: L("Harga murah dan sudah mulai stabil. Layak beli — tetap bagi 2–3 tahap agar tidak salah timing.", "Price is low and stabilising. Worth buying — still split it into 2–3 tranches."),
-  CICIL_cap: L("Harga sudah murah, tapi masih turun. Beli sebagian kecil saja (mis. 1/3 dana), simpan sisanya sampai tren berbalik.", "Already cheap but still falling. Buy a small part (e.g. 1/3 of funds), keep the rest until the trend turns."),
+const ADV = z => ({ BELI: L("Harga murah dan tren sudah berbalik naik. Layak beli — tetap bagi 2–3 tahap.", "Cheap and the trend has turned up. Worth buying — still split into 2–3 tranches."),
+  CICIL_bottom: L("Harga murah dan mulai membentuk dasar. Beli setengah, sisanya saat tren terkonfirmasi naik.", "Cheap and forming a base. Buy half now, the rest once the uptrend is confirmed."),
+  CICIL_event: L("Secara harga layak beli, tapi ada peristiwa besar dalam ≤7 hari. Beli sebagian sekarang, sisanya setelah peristiwa.", "Worth buying on price, but a major event is ≤7 days away. Buy part now, the rest after it."),
+  CICIL_trend: L("Harga wajar dengan tren naik kuat. Cicil bertahap.", "Fair price with a strong uptrend. Buy gradually."),
+  CICIL_cap: L("Harga murah tapi masih terus jatuh. Beli kecil saja (±1/3), tunggu harga berhenti membuat titik terendah baru.", "Cheap but still falling. Buy small (~1/3) and wait until it stops making new lows."),
   CICIL: L("Harga cukup menarik. Cocok beli bertahap (DCA), jangan sekaligus.", "Fairly attractive. Good for gradual buying (DCA), not all at once."),
-  TUNGGU: L("Harga di level wajar. Kalau tidak buru-buru, tunggu koreksi atau beli rutin kecil saja.", "Fair price. If you're not in a hurry, wait for a dip or keep small regular buys."),
+  TUNGGU: L("Harga belum cukup murah. Tunggu koreksi atau beli rutin kecil saja.", "Not cheap enough yet. Wait for a dip or keep small regular buys."),
   MAHAL: L("Harga relatif tinggi dibanding trennya. Lebih baik menunggu koreksi.", "Price is high relative to its trend. Better to wait for a correction.") }[z]);
+const AKEY = A => A.akey || (A.zone === "CICIL" && A.capped ? "CICIL_cap" : A.zone);
 const LABEL = z => ({ BELI: L("Waktu yang baik untuk beli", "Good time to buy"), CICIL: L("Cicil bertahap", "Buy gradually"), TUNGGU: L("Tunggu dulu", "Wait for now"), MAHAL: L("Mahal — tunda", "Expensive — hold off") }[z]);
 
 /* ====== estimasi & seri Antam gabungan ====== */
@@ -315,7 +332,7 @@ function depGrow(amount, fromISO, toDate = new Date()) {
 
 /* ================= ATURAN BELI ================= */
 // Porsi dana bulan ini yang dibelikan emas, menurut zona. BELI juga memakai seluruh dana cadangan.
-const RULE = { BELI: 1, CICIL: 0.5, CICIL_cap: 1 / 3, TUNGGU: 0.25, MAHAL: 0 };
+const RULE = { BELI: 1, CICIL: 0.5, CICIL_bottom: 0.5, CICIL_event: 0.5, CICIL_trend: 0.5, CICIL_cap: 1 / 3, TUNGGU: 0.25, MAHAL: 0 };
 const RULE_Z = { B: 1, C: 0.5, T: 0.25, M: 0 };
 function bestBrand() {
   let best = null;
@@ -326,7 +343,7 @@ function bestBrand() {
 function planHTML() {
   const A = DATA.analysis; if (!A) return "";
   const M = parseFloat(store.get("dcaM", "2000000")) || 0, C = parseFloat(store.get("cad", "0")) || 0;
-  const key = A.zone === "CICIL" && A.capped ? "CICIL_cap" : A.zone, frac = RULE[key];
+  const key = AKEY(A), frac = RULE[key] ?? 0.5;
   const buy = A.zone === "BELI" ? M + C : M * frac, save = A.zone === "BELI" ? 0 : M - buy;
   const bb = bestBrand();
   const soon = EVENTS.find(e => { const dt = new Date(e[0] + "+07:00") - Date.now(); return e[1] !== "strat" && dt > 0 && dt < 3 * 864e5; });
@@ -337,8 +354,8 @@ function planHTML() {
     <div><span>${L("Simpan ke cadangan", "Add to reserve")}</span><b>${R(save)}</b><span>${L("cadangan jadi ", "reserve becomes ")}${R(A.zone === "BELI" ? 0 : C + save)}</span></div></div>
     ${buy > 0 && bb ? `<div class="res">≈ <b>${N(buy / bb.j, 2)} gram ${BRANDS[bb.b]}</b> ${L("— merek paling cepat balik modal hari ini", "— fastest break-even brand today")} (${R(bb.j)}/g, ${L("balik modal", "break-even")} +${P(bb.be)}).</div>` : ""}
     ${soon ? `<div class="note">⏳ ${L(`Ada ${evName(soon)} ${evRow0(soon)}. Harga sering bergejolak di sekitar jadwal ini — pertimbangkan membeli setelahnya.`, `${evName(soon)} is ${evRow0(soon)}. Prices often swing around it — consider buying after.`)}</div>` : ""}
-    <div class="sub" style="margin-top:8px">${L("Aturan: BELI = 100% dana + seluruh cadangan · CICIL = 50% (33% bila masih turun tajam) · TUNGGU = 25% · MAHAL = 0%, semua sisa ditabung ke cadangan.",
-      "Rule: BUY = 100% + all reserve · ACCUMULATE = 50% (33% if still falling sharply) · WAIT = 25% · EXPENSIVE = 0%; the rest goes to reserve.")}
+    <div class="sub" style="margin-top:8px">${L("Aturan: BELI = 100% dana + seluruh cadangan · CICIL = 50% (33% bila harga masih jatuh) · TUNGGU = 25% · MAHAL = 0%, sisanya ditabung ke cadangan.",
+      "Rule: BUY = 100% + all reserve · ACCUMULATE = 50% (33% if still falling) · WAIT = 25% · EXPENSIVE = 0%; the rest goes to reserve.")}
       <a href="#alat" style="color:var(--gold2)">${L("Lihat hasil historis aturan ini →", "See this rule's historical results →")}</a></div></div>`;
 }
 const evRow0 = e => { const d = Math.ceil((new Date(e[0] + "+07:00") - Date.now()) / 864e5);
@@ -365,11 +382,16 @@ function vHome() {
     <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">${L("Rekomendasi hari ini", "Today's recommendation")}</h2>
     <span class="zone ${A ? "z-" + A.zone : ""}">${A ? ZL(A.zone) : "—"}</span></div>
     <div class="big">${A ? LABEL(A.zone) : L("Data belum cukup", "Not enough data")}</div>
-    <div class="sub">${A ? L("Skor ", "Score ") + A.score_eff + " / 100" + (A.capped ? L(" (skor mentah ", " (raw score ") + A.score + ")" : "") : ""}</div>
+    <div class="sub">${A ? L("Skor ", "Score ") + A.score_eff + " / 100" + (A.capped && A.score !== A.score_eff ? L(" (skor mentah ", " (raw score ") + A.score + ")" : "") : ""}</div>
     <div class="gauge"><div class="needle" style="left:calc(${A ? Math.max(0, Math.min(100, A.score_eff)) : 0}% - 2px)"></div></div>
     <div class="gl"><span>${L("Mahal", "Expensive")}</span><span>${L("Tunggu", "Wait")}</span><span>${L("Cicil", "Accumulate")}</span><span>${L("Beli", "Buy")}</span></div>
-    <div class="advice">${A ? ADV(A.zone === "CICIL" && A.capped ? "CICIL_cap" : A.zone) : ""}</div>
-    ${A && A.capped ? `<div class="note">${L("⚠️ Secara harga sudah masuk zona BELI, tapi tren masih turun tajam — skor dibatasi ke zona CICIL.", "⚠️ Price alone says BUY, but the trend is still falling sharply — capped at ACCUMULATE.")}</div>` : ""}
+    ${A && A.value != null ? `<div class="kpi" style="margin-top:12px">
+      <div><span>${L("Valuasi (murah?)", "Valuation (cheap?)")}</span><b>${A.value}/100</b><div class="bar"><i style="width:${A.value}%"></i></div></div>
+      <div><span>${L("Tren (sudah berbalik?)", "Trend (turned up?)")}</span><b>${A.trend}/100</b><div class="bar"><i style="width:${A.trend}%;background:var(--blue)"></i></div></div></div>` : ""}
+    <div class="advice">${A ? ADV(AKEY(A)) : ""}</div>
+    ${A && A.risk && A.risk.event ? `<div class="note">${RTXT.r_event(A.risk.event.days, null, { e: A.risk.event.kind, at: A.risk.event.at })}</div>` : ""}
+    ${A && A.risk && A.risk.vol > 1.5 ? `<div class="note">${RTXT.r_vol(A.risk.vol)}</div>` : ""}
+    ${A && !A.value && A.capped ? `<div class="note">${L("⚠️ Tren masih turun tajam — dibatasi ke zona CICIL.", "⚠️ Still falling sharply — capped at ACCUMULATE.")}</div>` : ""}
     <div style="margin-top:10px"><a href="#analisa" class="sub" style="color:var(--gold2)">${L("Lihat analisa lengkap →", "See full analysis →")}</a></div>
   </div>
   ${planHTML()}
@@ -463,14 +485,24 @@ function vAnalisa() {
   const A = DATA.analysis, BT = DATA.backtest, LOG = DATA.signal_log || [];
   let h = `<div class="card"><h2>${L("Komponen skor", "Score components")}${A ? ` · ${A.score_eff}/100 <span class="zone z-${A.zone}" style="margin-left:6px">${ZL(A.zone)}</span>` : ""}</h2>`;
   if (A) {
-    h += A.components.map(c => `<div class="comp"><div class="row"><span>${c.key ? L(...COMP[c.key]) : c.name}</span><span>${N(c.pts)} / ${c.max}</span></div><div class="bar"><i style="width:${c.pts / c.max * 100}%"></i></div></div>`).join("");
-    const rs = A.rcodes ? A.rcodes.map(x => RTXT[x.k] ? RTXT[x.k](x.v, x.m) : "").filter(Boolean) : A.reasons;
+    const compRow = c => `<div class="comp"><div class="row"><span>${c.key && COMP2[c.key] ? L(...COMP2[c.key]) : c.key && COMP[c.key] ? L(...COMP[c.key]) : c.name}</span><span>${N(c.pts)} / ${c.max}</span></div><div class="bar"><i style="width:${c.pts / c.max * 100}%;${c.g === "t" ? "background:var(--blue)" : ""}"></i></div></div>`;
+    if (A.value != null) {
+      h += `<div class="sub" style="margin-bottom:6px">${L("Cara investor berpengalaman: beli saat harga <b>murah</b> DAN penurunannya <b>sudah berhenti</b>, sambil memperhitungkan <b>risiko</b> jadwal besar.", "How seasoned investors think: buy when price is <b>cheap</b> AND the decline <b>has stopped</b>, while accounting for event <b>risk</b>.")}</div>
+        <h3>${L("1. Valuasi — seberapa murah?", "1. Valuation — how cheap?")} <span class="sub">${A.value}/100</span></h3>${A.components.filter(c => c.g === "v").map(compRow).join("")}
+        <h3>${L("2. Tren — sudah berhenti turun?", "2. Trend — has the fall stopped?")} <span class="sub">${A.trend}/100</span></h3>${A.components.filter(c => c.g === "t").map(compRow).join("")}
+        <h3>${L("3. Keputusan", "3. Decision")}</h3><table style="font-size:12px"><tr><th>${L("Valuasi", "Valuation")}</th><th>${L("Tren", "Trend")}</th><th>${L("Zona", "Zone")}</th></tr>
+        ${[["≥65", "≥50", "BELI"], ["≥65", "25–49", "CICIL"], ["≥65", "<25", "CICIL (1/3)"], ["45–64", "≥60", "CICIL"], ["45–64", "<60", "TUNGGU"], ["25–44", "—", "TUNGGU"], ["<25", "—", "MAHAL"]]
+          .map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${ZL(r[2].split(" ")[0])}${r[2].includes("(") ? " (1/3)" : ""}</td></tr>`).join("")}</table>
+        <div class="sub" style="margin-top:6px">${L("Risiko: bila keputusan The Fed / inflasi AS ≤7 hari lagi, BELI diturunkan ke CICIL. Bila pasar bergejolak, perkecil tiap pembelian.", "Risk: if a Fed decision / US CPI is ≤7 days away, BUY is lowered to ACCUMULATE. In volatile markets, use smaller tranches.")}</div>`;
+    } else h += A.components.map(compRow).join("");
+    const rs = A.rcodes ? A.rcodes.map(x => RTXT[x.k] ? RTXT[x.k](x.v, x.m, x) : "").filter(Boolean) : A.reasons;
     h += `<h3>${L("Alasan", "Reasons")}</h3><ul class="r">${rs.map(r => "<li>" + r + "</li>").join("")}</ul>`;
     const I = A.ind;
     const rows = [[L("Harga dunia (Rp/gram)", "World price (Rp/gram)"), R(I.last_idr_g)], [L("Rata-rata 20 hari", "20-day avg"), R(I.ma20)], [L("Rata-rata 50 hari", "50-day avg"), R(I.ma50)],
       [L("Rata-rata 200 hari", "200-day avg"), R(I.ma200)], [L("Selisih dari rata² 200 hari", "vs 200-day avg"), SP(I.dev200)], ["RSI 14", I.rsi == null ? "—" : N(I.rsi)],
       [L("Tertinggi 1 tahun", "1-year high"), R(I.hi52)], [L("Terendah 1 tahun", "1-year low"), R(I.lo52)], [L("Dari puncak 1 tahun", "From 1-year high"), SP(I.dd52)],
-      [L("Perubahan 5 hari", "5-day change"), SP(I.chg5)], [L("Perubahan ±1 bulan", "~1-month change"), SP(I.chg30)]];
+      [L("Perubahan 5 hari", "5-day change"), SP(I.chg5)], [L("Perubahan ±1 bulan", "~1-month change"), SP(I.chg30)],
+      ...(I.days_low != null ? [[L("Hari sejak terendah 1 tahun", "Days since 1-year low"), N(I.days_low, 0)], [L("Arah rata² 20 hari (10 hr)", "20-day avg slope (10d)"), SP(I.slope20)], [L("Volatilitas vs biasanya", "Volatility vs usual"), I.vol_ratio == null ? "—" : N(I.vol_ratio, 2) + "×"]] : [])];
     h += `<details style="margin-top:10px"><summary>${L("Indikator", "Indicators")}</summary><table style="margin-top:6px">${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join("")}</table></details>`;
   } else h += `<div class="empty">${L("Belum ada analisa.", "No analysis yet.")}</div>`;
   h += `</div>`;
@@ -650,10 +682,12 @@ function vMore() {
       <li>${L("🎯 Harga menyentuh target (Variables: TARGET_UBS / TARGET_ANTAM).", "🎯 Price hits your target (Variables: TARGET_UBS / TARGET_ANTAM).")}</li></ul>
     <p>${L("Matikan salah satunya dengan membuat Variable bernilai 0: NOTIF_DROP, NOTIF_EVENT, NOTIF_WEEKLY.", "Turn any off by creating a Variable set to 0: NOTIF_DROP, NOTIF_EVENT, NOTIF_WEEKLY.")}</p></details></div>
   <div class="card"><details><summary>${L("Cara kerja skor", "How the score works")}</summary>
-    <p>${L("Skor 0–100 dihitung dari harga dunia (Rp/gram): harga vs rata-rata 200 hari (25), RSI 14 hari (20), posisi di rentang 1 tahun (20), koreksi dari puncak (15), momentum (10), premi UBS (10). Jika harga masih anjlok tajam, skor dibatasi maksimal 69.",
-      "Score 0–100 from world price (Rp/gram): price vs 200-day avg (25), 14-day RSI (20), position in 1-year range (20), drawdown from high (15), momentum (10), UBS premium (10). If price is still dropping sharply, the score is capped at 69.")}</p>
-    <p>${L("Zona: ≥70 BELI · 50–69 CICIL · 35–49 TUNGGU · <35 MAHAL. Data diperbarui otomatis ±10.00 & 16.00 WIB. Bukan nasihat keuangan; tidak bisa memperkirakan berita mendadak.",
-      "Zones: ≥70 BUY · 50–69 ACCUMULATE · 35–49 WAIT · <35 EXPENSIVE. Updated ~10:00 & 16:00 WIB. Not financial advice; can't anticipate sudden news.")}</p></details></div>
+    <p>${L("Model 3 lapis ala investor berpengalaman, dari harga dunia (Rp/gram):", "A 3-layer model like seasoned investors use, from world price (Rp/gram):")}</p><ul>
+      <li>${L("<b>Valuasi 0–100</b> (murah?): harga vs rata-rata 200 hari (35), posisi di rentang 1 tahun (25), diskon dari puncak (20), RSI (10), premi UBS vs biasanya (10).", "<b>Valuation 0–100</b> (cheap?): price vs 200-day avg (35), position in 1-year range (25), discount from high (20), RSI (10), UBS premium vs usual (10).")}</li>
+      <li>${L("<b>Tren 0–100</b> (sudah berhenti turun?): di atas rata-rata 50 hari (25), arah rata-rata 20 hari (20), tidak lagi membuat titik terendah baru (25), momentum 1 bulan (15), di atas rata-rata 200 hari (15).", "<b>Trend 0–100</b> (has the fall stopped?): above 50-day avg (25), 20-day avg direction (20), no new lows (25), 1-month momentum (15), above 200-day avg (15).")}</li>
+      <li>${L("<b>Risiko</b>: jadwal The Fed / inflasi AS ≤7 hari dan volatilitas pasar.", "<b>Risk</b>: Fed / US CPI within 7 days and market volatility.")}</li></ul>
+    <p>${L("Zona ditentukan dari kombinasi Valuasi × Tren (lihat tabel di menu Analisa), bukan satu angka saja. Jadi harga yang murah tapi masih terus jatuh hanya mendapat CICIL kecil.", "The zone comes from Valuation × Trend (see the table in Analysis), not a single number — so a cheap but still-falling price only gets a small ACCUMULATE.")}</p>
+    <p>${L("Data diperbarui otomatis ±10.00 & 16.00 WIB. Bukan nasihat keuangan; tidak bisa memperkirakan berita mendadak.", "Updated ~10:00 & 16:00 WIB. Not financial advice; can't anticipate sudden news.")}</p></details></div>
   <div class="card"><details><summary>${L("Status sumber data", "Data source status")}</summary>
     <table style="margin-top:6px">${Object.keys(s).map(k => `<tr><td>${esc(k)}</td><td style="word-break:break-word">${esc(s[k])}</td></tr>`).join("")}
     <tr><td>${L("Versi robot", "Robot version")}</td><td>${DATA?.version || "—"}</td></tr><tr><td>${L("Versi aplikasi", "App version")}</td><td>${VERSION}</td></tr></table></details></div>

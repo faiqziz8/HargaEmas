@@ -1,7 +1,7 @@
 {
   "name": "Monitor Harga Emas",
   "short_name": "Harga Emas",
-  "description": "Monitor harga emas Antam, UBS & dunia dengan rekomendasi beli. v1.7.0 © 2026 Faiq Aziz",
+  "description": "Monitor harga emas Antam, UBS & dunia dengan rekomendasi beli. v1.8.0 © 2026 Faiq Aziz",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

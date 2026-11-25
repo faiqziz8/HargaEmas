@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Monitor Harga Emas — robot pengambil harga harian (dijalankan GitHub Actions).
-v1.7.0  © 2026 Faiq Aziz
+v1.8.0  © 2026 Faiq Aziz
 
 Mengambil:
   - Harga emas dunia + riwayat s.d. 20 tahun          : Bundesbank (cadangan: LBMA, Yahoo, freegoldapi, stooq, datahub bulanan, gold-api)
@@ -22,7 +22,7 @@ import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 DATA_FILE = os.environ.get("DATA_FILE", "prices.json")
 WIB = timezone(timedelta(hours=7))
 GRAM_PER_OZ = 31.1034768
@@ -379,137 +379,6 @@ def median(v):
     return None if n == 0 else (s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2)
 
 
-def analyze(world, domestic, approx=False):
-    """world: list {d, usd, kurs, idr_g} urut tanggal. domestic: list {d, antam_jual,...}."""
-    idr = [w["idr_g"] for w in world]
-    usd = [w["usd"] for w in world]
-    last = idr[-1]
-    ma20, ma50, ma200 = sma(idr, 20), sma(idr, 50), sma(idr, 200)
-    r = None if approx else rsi(idr, 14)
-    yr = idr[-252:]
-    hi, lo = max(yr), min(yr)
-    pos = (last - lo) / (hi - lo) if hi > lo else 0.5
-    dd = last / hi - 1
-    chg5 = last / idr[-6] - 1 if len(idr) >= 6 else 0
-    chg30 = last / idr[-22] - 1 if len(idr) >= 22 else 0
-    dev200 = last / ma200 - 1 if ma200 else None
-
-    comp = []
-    reasons = []
-    rc = []          # kode alasan terstruktur (untuk tampilan dwibahasa di aplikasi)
-
-    # 1. Valuasi vs rata-rata 200 hari (25)
-    p = lin(dev200, 0.10, -0.12, 0, 25) if dev200 is not None else 12.5
-    comp.append(("Harga vs rata-rata 200 hari", round(p, 1), 25, "dev200"))
-    if dev200 is not None:
-        rc.append({"k": "dev200", "v": round(dev200, 4)})
-        reasons.append(f"Harga dunia {abs(dev200)*100:.1f}% {'di bawah' if dev200 < 0 else 'di atas'} rata-rata 200 hari"
-                       + (" — relatif murah." if dev200 < -0.05 else " — relatif mahal." if dev200 > 0.05 else " — wajar."))
-
-    # 2. RSI 14 (20)
-    p = lin(r, 70, 30, 0, 20) if r is not None else 10
-    comp.append(("RSI 14 hari (jenuh jual/beli)", round(p, 1), 20, "rsi"))
-    if r is not None:
-        rc.append({"k": "rsi", "v": round(r, 1)})
-        reasons.append(f"RSI {r:.0f}" + (" — jenuh jual (oversold), sering jadi titik pantul." if r < 30
-                                         else " — jenuh beli (overbought), rawan koreksi." if r > 70 else " — netral."))
-
-    # 3. Posisi dalam rentang 52 minggu (20)
-    p = lin(pos, 1.0, 0.0, 0, 20)
-    comp.append(("Posisi di rentang 1 tahun", round(p, 1), 20, "pos52"))
-    rc.append({"k": "pos52", "v": round(pos, 3)})
-    reasons.append(f"Berada di {pos*100:.0f}% rentang harga setahun (0% = termurah, 100% = termahal).")
-
-    # 4. Koreksi dari puncak 1 tahun (15)
-    p = lin(-dd, 0.0, 0.25, 0, 15)
-    comp.append(("Koreksi dari puncak 1 tahun", round(p, 1), 15, "dd52"))
-    rc.append({"k": "dd52", "v": round(dd, 4)})
-    reasons.append(f"Sudah turun {abs(dd)*100:.1f}% dari puncak setahun terakhir.")
-
-    # 5. Momentum — hindari 'menangkap pisau jatuh' (10)
-    falling = (ma20 is not None and last < ma20 and (chg30 < -0.04 if approx else chg5 < -0.02))
-    if ma20 is not None and last > ma20:
-        p = 10
-        rc.append({"k": "mom_up"})
-        reasons.append("Harga sudah di atas rata-rata 20 hari — mulai stabil/berbalik naik.")
-    elif falling:
-        p = 0
-        rc.append({"k": "mom_fall_m" if approx else "mom_fall_d", "v": round(chg30 if approx else chg5, 4)})
-        reasons.append((f"Masih dalam tren turun tajam ({chg30*100:.1f}% dalam sebulan)" if approx else
-                        f"Masih dalam tren turun tajam ({chg5*100:.1f}% dalam 5 hari)") + " — jangan beli sekaligus.")
-    else:
-        p = 5
-        rc.append({"k": "mom_flat"})
-        reasons.append("Momentum netral, belum ada tanda pembalikan yang jelas.")
-    comp.append(("Momentum jangka pendek", p, 10, "mom"))
-
-    # 6. Premi UBS terhadap harga dunia (10)
-    prem_hist = [x["ubs_jual"] / x["idr_g"] - 1 for x in domestic if x.get("ubs_jual") and x.get("idr_g")]
-    prem_now = prem_hist[-1] if prem_hist else None
-    if prem_now is not None and len(prem_hist) >= 10:
-        med = median(prem_hist[:-1])
-        p = lin(prem_now - med, 0.03, -0.03, 0, 10)
-        rc.append({"k": "prem_cmp", "v": round(prem_now, 4), "m": round(med, 4)})
-        reasons.append(f"Premi UBS {prem_now*100:.1f}% di atas harga dunia (median {med*100:.1f}%)"
-                       + (" — lebih murah dari biasanya." if prem_now < med else " — lebih mahal dari biasanya."))
-    else:
-        p = 5
-        if prem_now is not None:
-            rc.append({"k": "prem", "v": round(prem_now, 4)})
-            reasons.append(f"Premi UBS {prem_now*100:.1f}% di atas harga dunia (riwayat belum cukup untuk dibandingkan).")
-    comp.append(("Premi UBS vs harga dunia", round(p, 1), 10, "prem"))
-
-    score = round(sum(c[1] for c in comp))
-    capped = False
-    if falling and score >= BUY_SCORE:
-        score_eff = BUY_SCORE - 1
-        capped = True
-    else:
-        score_eff = score
-
-    if score_eff >= BUY_SCORE:
-        zone, label = "BELI", "Waktu yang baik untuk beli"
-        advice = "Harga murah dan sudah mulai stabil. Layak beli — tetap bagi 2–3 tahap agar tidak salah timing."
-    elif score_eff >= 50:
-        zone, label = "CICIL", "Cicil bertahap"
-        advice = ("Harga sudah murah, tapi masih turun. Beli sebagian kecil saja (mis. 1/3 dana), "
-                  "simpan sisanya sampai tren berbalik." if capped else
-                  "Harga cukup menarik. Cocok beli bertahap (DCA), jangan sekaligus.")
-    elif score_eff >= 35:
-        zone, label = "TUNGGU", "Tunggu dulu"
-        advice = "Harga di level wajar. Kalau tidak buru-buru, tunggu koreksi atau beli rutin kecil saja."
-    else:
-        zone, label = "MAHAL", "Mahal — tunda"
-        advice = "Harga relatif tinggi dibanding trennya. Lebih baik menunggu koreksi."
-
-    spread = None
-    if domestic and domestic[-1].get("ubs_jual") and domestic[-1].get("ubs_bb"):
-        spread = 1 - domestic[-1]["ubs_bb"] / domestic[-1]["ubs_jual"]
-        rc.append({"k": "spread", "v": round(spread, 4)})
-        reasons.append(f"Selisih jual–buyback UBS {spread*100:.1f}%: harga harus naik sebesar ini dulu agar balik modal.")
-
-    if approx:
-        rc.append({"k": "approx"})
-        reasons.append("Catatan: data harian dunia belum tersedia, analisa memakai data bulanan (RSI belum dihitung). "
-                       "Akurasi akan naik setelah data harian terkumpul.")
-    reasons = [re.sub(r"(\d)\.(\d)", r"\1,\2", x) for x in reasons]
-    return {
-        "score": score, "score_eff": score_eff, "capped": capped, "approx": approx,
-        "zone": zone, "label": label, "advice": advice,
-        "components": [{"name": n, "pts": pt, "max": mx, "key": k} for n, pt, mx, k in comp],
-        "reasons": reasons,
-        "rcodes": rc,
-        "ind": {
-            "last_idr_g": round(last), "last_usd": usd[-1],
-            "ma20": ma20 and round(ma20), "ma50": ma50 and round(ma50), "ma200": ma200 and round(ma200),
-            "rsi": r and round(r, 1), "hi52": round(hi), "lo52": round(lo), "pos52": round(pos, 3),
-            "dd52": round(dd, 4), "chg5": round(chg5, 4), "chg30": round(chg30, 4),
-            "dev200": dev200 and round(dev200, 4), "premium_ubs": prem_now and round(prem_now, 4),
-            "spread_ubs": spread and round(spread, 4),
-        },
-    }
-
-
 # ======================= KALENDER & SUKU BUNGA =======================
 # Jadwal resmi The Fed (revisi 12 Nov 2026) & BLS (CPI), dalam WIB.
 EVENTS = [
@@ -537,48 +406,20 @@ def deposit_rates_worldbank():
 
 # ======================= UJI HISTORIS SINYAL =======================
 def backtest(series, approx=False):
-    """Hitung skor & zona untuk setiap hari dalam riwayat (tanpa komponen premi -> netral 5),
-    lalu ukur hasil 6 & 12 bulan setelah sinyal BELI / CICIL pertama muncul."""
+    """Uji historis model yang sama (valuasi x tren) untuk setiap hari, lalu ukur hasil 6 & 12 bulan kemudian.
+    Catatan: komponen premi & risiko peristiwa tidak tersedia untuk masa lalu (premi dianggap netral)."""
     idr = [w["idr_g"] for w in series]
     dts = [w["d"] for w in series]
     n = len(idr)
     if n < 300:
         return None
-    cs = [0.0]
-    for v in idr:
-        cs.append(cs[-1] + v)
-    gains, losses = [0.0], [0.0]
-    for i in range(1, n):
-        dlt = idr[i] - idr[i - 1]
-        gains.append(gains[-1] + max(dlt, 0))
-        losses.append(losses[-1] + max(-dlt, 0))
     zones, scores = [None] * n, [None] * n
     for i in range(252, n):
-        last = idr[i]
-        ma20 = (cs[i + 1] - cs[i - 19]) / 20
-        ma200 = (cs[i + 1] - cs[i - 199]) / 200
-        win = idr[i - 251:i + 1]
-        hi, lo = max(win), min(win)
-        pos = (last - lo) / (hi - lo) if hi > lo else 0.5
-        dd = last / hi - 1
-        chg5 = last / idr[i - 5] - 1
-        chg30 = last / idr[i - 21] - 1
-        dev = last / ma200 - 1
-        if approx:
-            r = None
-        else:
-            g, l_ = gains[i] - gains[i - 14], losses[i] - losses[i - 14]
-            r = 100.0 if l_ == 0 else 100 - 100 / (1 + g / l_)
-        pts = lin(dev, 0.10, -0.12, 0, 25) + (lin(r, 70, 30, 0, 20) if r is not None else 10)
-        pts += lin(pos, 1.0, 0.0, 0, 20) + lin(-dd, 0.0, 0.25, 0, 15)
-        falling = last < ma20 and (chg30 < -0.04 if approx else chg5 < -0.02)
-        pts += 10 if last > ma20 else (0 if falling else 5)
-        pts += 5
-        sc = round(pts)
-        if falling and sc >= BUY_SCORE:
-            sc = BUY_SCORE - 1
-        scores[i] = sc
-        zones[i] = "B" if sc >= BUY_SCORE else "C" if sc >= 50 else "T" if sc >= 35 else "M"
+        value, trend, _, _, _ = score_core(idr, i, approx)
+        z, _, _ = zone_from(value, trend, approx)
+        zones[i] = {"BELI": "B", "CICIL": "C", "TUNGGU": "T", "MAHAL": "M"}[z]
+        lo_b, hi_b = BANDS[z]
+        scores[i] = max(lo_b, min(hi_b, round(0.6 * value + 0.4 * trend)))
     H6, H12 = 126, 252
 
     def fwd(i, h):
@@ -586,11 +427,8 @@ def backtest(series, approx=False):
 
     sig = []
     for i in range(253, n):
-        if zones[i] in ("B", "C") and zones[i - 1] != zones[i] and zones[i - 1] not in ("B",):
-            if zones[i] == "C" and zones[i - 1] == "B":
-                continue
-            sig.append({"d": dts[i], "z": zones[i], "s": scores[i], "p": round(idr[i]),
-                        "r6": fwd(i, H6), "r12": fwd(i, H12)})
+        if zones[i] in ("B", "C") and zones[i - 1] != zones[i] and not (zones[i] == "C" and zones[i - 1] == "B"):
+            sig.append({"d": dts[i], "z": zones[i], "s": scores[i], "p": round(idr[i]), "r6": fwd(i, H6), "r12": fwd(i, H12)})
 
     def stats(lst, key):
         v = [x[key] for x in lst if x[key] is not None]
@@ -598,7 +436,7 @@ def backtest(series, approx=False):
             return None
         return {"n": len(v), "avg": round(sum(v) / len(v), 4), "win": round(sum(1 for x in v if x > 0) / len(v), 3)}
 
-    all_idx = [i for i in range(252, n)]
+    all_idx = list(range(252, n))
     base = {k: stats([{"r": fwd(i, h)} for i in all_idx], "r") for k, h in (("r6", H6), ("r12", H12))}
     by_zone = {}
     for zc in ("B", "C", "T", "M"):
@@ -610,8 +448,175 @@ def backtest(series, approx=False):
         if ym not in seen:
             seen.add(ym)
             monthly.append([dts[i], zones[i], scores[i]])
-    return {"approx": approx, "from": dts[252], "signals": sig[-80:], "n_signals": len(sig),
+    return {"model": 2, "approx": approx, "from": dts[252], "signals": sig[-80:], "n_signals": len(sig),
             "stats": {"base": base, "zone": by_zone}, "monthly": monthly}
+
+
+# ======================= ANALISA v2 (valuasi x tren x risiko) =======================
+def zone_from(value, trend, approx=False):
+    """Matriks keputusan ala investor: VALUASI (murah?) x TREN (sudah berbalik?).
+    Kembalikan (zona, kunci_saran, dibatasi?)"""
+    if value >= 65:
+        if trend >= 50:
+            return "BELI", "BELI", False                 # murah + tren sudah berbalik naik
+        if trend >= 25:
+            return "CICIL", "CICIL_bottom", False        # murah, sedang membentuk dasar
+        return "CICIL", "CICIL_cap", True                # murah tapi masih jatuh -> cicil kecil
+    if value >= 45:
+        return ("CICIL", "CICIL_trend", False) if trend >= 60 else ("TUNGGU", "TUNGGU", False)
+    if value >= 25:
+        return "TUNGGU", "TUNGGU", False
+    return "MAHAL", "MAHAL", False
+
+
+BANDS = {"BELI": (70, 100), "CICIL": (50, 69), "TUNGGU": (35, 49), "MAHAL": (0, 34)}
+
+
+def score_core(idr, i, approx=False, prem_pts=5.0):
+    """Hitung skor VALUASI & TREN pada indeks i dari deret harian Rp/gram (minimal 253 titik)."""
+    last = idr[i]
+    ma20 = sum(idr[i - 19:i + 1]) / 20
+    ma20_prev = sum(idr[i - 29:i - 9]) / 20                     # rata-rata 20 hari, 10 hari lalu
+    ma50 = sum(idr[i - 49:i + 1]) / 50
+    ma200 = sum(idr[i - 199:i + 1]) / 200
+    win = idr[i - 251:i + 1]
+    hi, lo = max(win), min(win)
+    lo_idx = i - 251 + win.index(lo)
+    days_low = i - lo_idx                                        # hari sejak titik terendah 1 tahun
+    pos = (last - lo) / (hi - lo) if hi > lo else 0.5
+    dd = last / hi - 1
+    dev200 = last / ma200 - 1
+    chg20 = last / idr[i - 20] - 1
+    slope = ma20 / ma20_prev - 1
+    if approx:
+        r = None
+    else:
+        g = l_ = 0.0
+        for a, b in zip(idr[i - 14:i], idr[i - 13:i + 1]):
+            d = b - a
+            g += max(d, 0)
+            l_ += max(-d, 0)
+        r = 100.0 if l_ == 0 else 100 - 100 / (1 + g / l_)
+    # ---- VALUASI 0-100: seberapa murah dibanding sejarahnya ----
+    v = [("v_dev200", lin(dev200, 0.15, -0.15, 0, 35), 35),
+         ("v_pos52", lin(pos, 1.0, 0.0, 0, 25), 25),
+         ("v_dd52", lin(-dd, 0.0, 0.30, 0, 20), 20),
+         ("v_rsi", lin(r, 70, 30, 0, 10) if r is not None else 5, 10),
+         ("v_prem", prem_pts, 10)]
+    # ---- TREN 0-100: apakah penurunan sudah berhenti / berbalik ----
+    t = [("t_ma50", 25 if last > ma50 else (12 if last > ma50 * 0.97 else 0), 25),
+         ("t_slope", 20 if slope > 0.005 else (10 if slope > -0.005 else 0), 20),
+         ("t_low", 25 if days_low >= 20 else 15 if days_low >= 10 else 8 if days_low >= 5 else 0, 25),
+         ("t_mom", 15 if chg20 > 0.02 else (8 if chg20 > -0.02 else 0), 15),
+         ("t_ma200", 15 if last > ma200 else 0, 15)]
+    value = sum(p for _, p, _ in v)
+    trend = sum(p for _, p, _ in t)
+    ind = {"last": last, "ma20": ma20, "ma50": ma50, "ma200": ma200, "rsi": r, "hi": hi, "lo": lo, "pos": pos,
+           "dd": dd, "dev200": dev200, "chg20": chg20, "chg5": last / idr[i - 5] - 1, "slope": slope, "days_low": days_low}
+    return value, trend, v, t, ind
+
+
+def vol_ratio(idr, i):
+    """Volatilitas 20 hari dibanding median volatilitas 1 tahun (>1,5 = pasar sedang bergejolak)."""
+    def vol(a, b):
+        rets = [idr[k] / idr[k - 1] - 1 for k in range(a, b)]
+        m = sum(rets) / len(rets)
+        return (sum((x - m) ** 2 for x in rets) / len(rets)) ** 0.5
+    if i < 272:
+        return None
+    now_v = vol(i - 19, i + 1)
+    hist = [vol(k - 19, k + 1) for k in range(i - 251, i + 1, 10)]
+    med = median(hist)
+    return now_v / med if med else None
+
+
+def next_event(now):
+    for ts, kind in EVENTS:
+        ev = datetime.strptime(ts, "%Y-%m-%d %H:%M").replace(tzinfo=WIB)
+        if ev > now:
+            return ev, kind
+    return None, None
+
+
+def analyze(world, domestic, approx=False, now=None):
+    """world: deret hari kerja {d, idr_g, usd}. Analisa 3 lapis: VALUASI, TREN, RISIKO."""
+    now = now or datetime.now(WIB)
+    idr = [w["idr_g"] for w in world]
+    usd = [w["usd"] for w in world]
+    i = len(idr) - 1
+    # premi UBS dibanding biasanya (komponen valuasi)
+    prem_hist = [x["ubs_jual"] / x["idr_g"] - 1 for x in domestic if x.get("ubs_jual") and x.get("idr_g")]
+    prem_now = prem_hist[-1] if prem_hist else None
+    med = median(prem_hist[:-1]) if len(prem_hist) >= 10 else None
+    prem_pts = lin(prem_now - med, 0.03, -0.03, 0, 10) if med is not None else 5.0
+    value, trend, vc, tc, I = score_core(idr, i, approx, prem_pts)
+    zone, akey, capped = zone_from(value, trend, approx)
+    rc = []
+    # ---- RISIKO: peristiwa besar & volatilitas ----
+    ev, kind = next_event(now)
+    ev_days = (ev - now).total_seconds() / 86400 if ev else None
+    risk = {"event": None, "vol": None}
+    if ev and ev_days <= 7:
+        risk["event"] = {"kind": kind, "at": ev.strftime("%Y-%m-%d %H:%M"), "days": round(ev_days, 1)}
+        rc.append({"k": "r_event", "v": round(ev_days, 1), "e": kind, "at": ev.strftime("%Y-%m-%d %H:%M")})
+        if zone == "BELI":
+            zone, akey, capped = "CICIL", "CICIL_event", True
+    vr = vol_ratio(idr, i)
+    if vr is not None:
+        risk["vol"] = round(vr, 2)
+        if vr > 1.5:
+            rc.append({"k": "r_vol", "v": round(vr, 2)})
+    # ---- skor gabungan untuk jarum (dijepit ke rentang zona) ----
+    raw = round(0.6 * value + 0.4 * trend)
+    lo_b, hi_b = BANDS[zone]
+    score_eff = max(lo_b, min(hi_b, raw))
+    # ---- alasan terstruktur ----
+    rc.append({"k": "dev200", "v": round(I["dev200"], 4)})
+    if I["rsi"] is not None:
+        rc.append({"k": "rsi", "v": round(I["rsi"], 1)})
+    rc.append({"k": "pos52", "v": round(I["pos"], 3)})
+    rc.append({"k": "dd52", "v": round(I["dd"], 4)})
+    rc.append({"k": "t_low", "v": I["days_low"]})
+    rc.append({"k": "t_ma50", "v": round(I["last"] / I["ma50"] - 1, 4)})
+    rc.append({"k": "t_slope", "v": round(I["slope"], 4)})
+    if prem_now is not None:
+        rc.append({"k": "prem_cmp", "v": round(prem_now, 4), "m": round(med, 4)} if med is not None
+                  else {"k": "prem", "v": round(prem_now, 4)})
+    spread = None
+    if domestic and domestic[-1].get("ubs_jual") and domestic[-1].get("ubs_bb"):
+        spread = 1 - domestic[-1]["ubs_bb"] / domestic[-1]["ubs_jual"]
+        rc.append({"k": "spread", "v": round(spread, 4)})
+    if approx:
+        rc.append({"k": "approx"})
+    names = {"v_dev200": "Harga vs rata-rata 200 hari", "v_pos52": "Posisi di rentang 1 tahun", "v_dd52": "Diskon dari puncak 1 tahun",
+             "v_rsi": "RSI 14 hari (jenuh jual)", "v_prem": "Premi UBS vs biasanya", "t_ma50": "Harga vs rata-rata 50 hari",
+             "t_slope": "Arah rata-rata 20 hari", "t_low": "Tidak lagi membuat titik terendah baru",
+             "t_mom": "Momentum 1 bulan", "t_ma200": "Di atas rata-rata 200 hari (tren besar)"}
+    comps = [{"name": names[k], "pts": round(p, 1), "max": m, "key": k, "g": k[0]} for k, p, m in vc + tc]
+    labels = {"BELI": "Waktu yang baik untuk beli", "CICIL": "Cicil bertahap", "TUNGGU": "Tunggu dulu", "MAHAL": "Mahal — tunda"}
+    advice = {"BELI": "Harga murah dan tren sudah berbalik. Layak beli — tetap bagi 2–3 tahap.",
+              "CICIL_bottom": "Harga murah dan mulai membentuk dasar. Beli setengah, sisanya saat tren terkonfirmasi naik.",
+              "CICIL_cap": "Harga murah tapi masih terus jatuh. Beli kecil saja (±1/3), tunggu harga berhenti membuat titik terendah baru.",
+              "CICIL_event": "Secara harga layak beli, tapi ada peristiwa besar dalam ≤7 hari. Beli sebagian sekarang, sisanya setelah peristiwa.",
+              "CICIL_trend": "Harga wajar dengan tren naik kuat. Cicil bertahap.",
+              "TUNGGU": "Harga belum cukup murah. Tunggu koreksi atau beli rutin kecil saja.",
+              "MAHAL": "Harga mahal dibanding trennya. Tunda pembelian."}
+    reasons = [advice[akey]]
+    return {
+        "model": 2, "score": raw, "score_eff": score_eff, "capped": capped, "approx": approx, "akey": akey,
+        "value": round(value), "trend": round(trend), "risk": risk,
+        "zone": zone, "label": labels[zone], "advice": advice[akey],
+        "components": comps, "reasons": reasons, "rcodes": rc,
+        "ind": {
+            "last_idr_g": round(I["last"]), "last_usd": usd[-1],
+            "ma20": round(I["ma20"]), "ma50": round(I["ma50"]), "ma200": round(I["ma200"]),
+            "rsi": I["rsi"] and round(I["rsi"], 1), "hi52": round(I["hi"]), "lo52": round(I["lo"]), "pos52": round(I["pos"], 3),
+            "dd52": round(I["dd"], 4), "chg5": round(I["chg5"], 4), "chg30": round(I["chg20"], 4),
+            "dev200": round(I["dev200"], 4), "premium_ubs": prem_now and round(prem_now, 4),
+            "spread_ubs": spread and round(spread, 4), "days_low": I["days_low"], "slope20": round(I["slope"], 4),
+            "vol_ratio": risk["vol"],
+        },
+    }
 
 
 # ======================= NOTIFIKASI =======================
